@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CYBERPUMP 5M // 虛擬幣5分鐘暴漲即時分析系統</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <!-- Ambient glowing background lights -->
+  <div class="ambient-glow glow-1"></div>
+  <div class="ambient-glow glow-2"></div>
+  <div class="ambient-glow glow-3"></div>
+
+  <!-- Audio Chime Element Container (Web Audio API fallback) -->
+  <div id="audio-container" style="display:none;"></div>
+
+  <!-- App Wrapper -->
+  <div class="app-layout">
+    
+    <!-- Top Navigation Bar -->
+    <header class="top-nav">
+      <div class="nav-left">
+        <div class="brand-logo">
+          <div class="logo-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <div class="brand-title">CYBERPUMP <span class="accent-badge">5M</span></div>
+            <div class="brand-subtitle">BINANCE 實時高頻拉盤雷達 // ULTRA-LOW LATENCY</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-center">
+        <div class="stream-status" id="ws-status-badge">
+          <span class="status-dot pulsing"></span>
+          <span class="status-label" id="ws-status-text">連接幣安實時數據中...</span>
+          <span class="status-ping" id="ws-ping-badge">-- ms</span>
+        </div>
+      </div>
+
+      <div class="nav-right">
+        <!-- Audio alert toggle -->
+        <button class="nav-btn" id="btn-sound-toggle" title="切換暴漲警報音效">
+          <span class="btn-icon" id="sound-icon">🔊</span>
+          <span class="btn-label" id="sound-label">警報音效: 開</span>
+        </button>
+
+        <!-- Alert threshold selector -->
+        <div class="threshold-selector">
+          <span class="selector-label">預警門檻:</span>
+          <select id="threshold-select" class="nav-select">
+            <option value="1.0">≥ 1.0%</option>
+            <option value="1.5">≥ 1.5%</option>
+            <option value="2.0" selected>≥ 2.0% (標準)</option>
+            <option value="3.0">≥ 3.0% (強勢)</option>
+            <option value="5.0">≥ 5.0% (狂飆)</option>
+          </select>
+        </div>
+
+        <!-- View mode toggle -->
+        <div class="view-toggle">
+          <button class="view-btn active" id="view-table-btn" title="切換列表視圖">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+          </button>
+          <button class="view-btn" id="view-cards-btn" title="切換卡片視圖">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Market Overview Metric Cards -->
+    <section class="overview-grid">
+      <!-- Card 1: Top 5m Gainer -->
+      <div class="metric-card card-glow-green" id="card-top-gainer">
+        <div class="card-header">
+          <span class="card-icon">🚀</span>
+          <span class="card-title">5分鐘暴漲榜首</span>
+          <span class="tag-pill tag-pump">TOP 1</span>
+        </div>
+        <div class="card-body">
+          <div class="metric-primary">
+            <span class="coin-symbol-large" id="top-gainer-symbol">載入中...</span>
+            <span class="coin-price-main" id="top-gainer-price">$0.00</span>
+          </div>
+          <div class="metric-sub">
+            <span class="gain-badge-giant positive" id="top-gainer-gain">+0.00%</span>
+            <div class="metric-meta-box">
+              <span class="meta-label">5M成交額</span>
+              <span class="meta-val" id="top-gainer-vol">$0.0k</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Top Volume Spike -->
+      <div class="metric-card card-glow-amber" id="card-top-spike">
+        <div class="card-header">
+          <span class="card-icon">🔥</span>
+          <span class="card-title">5分鐘主力爆量王</span>
+          <span class="tag-pill tag-spike">異常放量</span>
+        </div>
+        <div class="card-body">
+          <div class="metric-primary">
+            <span class="coin-symbol-large" id="top-spike-symbol">載入中...</span>
+            <span class="spike-multiple-giant" id="top-spike-multiple">0.0x</span>
+          </div>
+          <div class="metric-sub">
+            <div class="meta-row">
+              <span class="meta-label">5分鐘漲幅:</span>
+              <span class="meta-val highlight-green" id="top-spike-gain">+0.00%</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">5M異動量:</span>
+              <span class="meta-val" id="top-spike-vol">$0.0k</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: Market Advance / Decline -->
+      <div class="metric-card card-glow-blue">
+        <div class="card-header">
+          <span class="card-icon">⚡</span>
+          <span class="card-title">市場5分鐘多空情緒</span>
+          <span class="tag-pill tag-sentiment" id="sentiment-tag">多頭佔優</span>
+        </div>
+        <div class="card-body">
+          <div class="sentiment-meter">
+            <div class="sentiment-header">
+              <span class="meter-stat bull-stat">
+                <span class="arrow-up">▲</span> 上漲 <strong id="bull-count">0</strong>
+              </span>
+              <span class="sentiment-pct" id="bull-pct">50.0%</span>
+              <span class="meter-stat bear-stat">
+                下跌 <strong id="bear-count">0</strong> <span class="arrow-down">▼</span>
+              </span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-bull" id="sentiment-bar" style="width: 50%;"></div>
+            </div>
+          </div>
+          <div class="sentiment-footer">
+            <span class="sentiment-sub-text">監控 <strong id="total-tracked-coins">0</strong> 檔熱門 USDT 交易對</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Global 5M Volume -->
+      <div class="metric-card card-glow-purple">
+        <div class="card-header">
+          <span class="card-icon">🌊</span>
+          <span class="card-title">全網 5 分鐘成交總額</span>
+          <span class="tag-pill tag-neutral">5M TURNOVER</span>
+        </div>
+        <div class="card-body">
+          <div class="metric-primary">
+            <span class="total-vol-giant" id="total-5m-vol">$0.00 M</span>
+          </div>
+          <div class="metric-sub">
+            <span class="sub-description">即時滾動計算最近300秒真實撮合量</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Controls and Filter Bar -->
+    <div class="toolbar-container">
+      <div class="toolbar-left">
+        <!-- Sort tabs -->
+        <div class="tab-group" id="sort-tabs">
+          <button class="tab-btn active" data-sort="price_chg_5m">
+            <span class="tab-fire">🚀</span> 5分鐘漲幅
+          </button>
+          <button class="tab-btn" data-sort="price_chg_1m">
+            <span class="tab-fire">⚡</span> 1分鐘急速
+          </button>
+          <button class="tab-btn" data-sort="vol_spike">
+            <span class="tab-fire">🔥</span> 爆量倍數
+          </button>
+          <button class="tab-btn" data-sort="price_chg_15m">
+            <span class="tab-fire">🌊</span> 15分鐘波段
+          </button>
+          <button class="tab-btn" data-sort="vol_5m">
+            <span class="tab-fire">💰</span> 5M成交量
+          </button>
+          <button class="tab-btn dumper-tab" data-sort="dump_5m">
+            <span class="tab-fire">🔻</span> 5M跌幅
+          </button>
+        </div>
+      </div>
+
+      <div class="toolbar-right">
+        <!-- Min Volume Filter Dropdown -->
+        <div class="filter-box">
+          <label class="filter-label">過濾低量雜訊:</label>
+          <select id="min-vol-filter" class="nav-select select-compact">
+            <option value="0">全部流動性</option>
+            <option value="10000" selected>5M量 ≥ $10,000</option>
+            <option value="50000">5M量 ≥ $50,000 (推薦)</option>
+            <option value="100000">5M量 ≥ $100,000 (主力)</option>
+            <option value="500000">5M量 ≥ $500,000 (巨鯨)</option>
+          </select>
+        </div>
+
+        <!-- Search input -->
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="symbol-search" placeholder="搜尋代號 (例: SOL, BTC, PEPE...)" autocomplete="off">
+          <button class="clear-search-btn" id="clear-search" style="display:none;">✕</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Workspace (Table/Grid + Live Radar Drawer) -->
+    <main class="main-workspace">
+      
+      <!-- Left / Center: Crypto Market Table / Cards -->
+      <div class="market-content-pane">
+        
+        <!-- Table View -->
+        <div class="table-card" id="table-container">
+          <table class="crypto-table" id="crypto-table">
+            <thead>
+              <tr>
+                <th class="col-rank">#</th>
+                <th class="col-symbol">幣種交易對</th>
+                <th class="col-price sortable" data-sort="last_price">最新價格</th>
+                <th class="col-chg5m sortable active-sort" data-sort="price_chg_5m">5分鐘漲跌幅</th>
+                <th class="col-chg1m sortable" data-sort="price_chg_1m">1分鐘增速</th>
+                <th class="col-chg15m sortable" data-sort="price_chg_15m">15分鐘</th>
+                <th class="col-vol5m sortable" data-sort="vol_5m">5M成交額</th>
+                <th class="col-spike sortable" data-sort="vol_spike">爆量倍數</th>
+                <th class="col-spark">5M 即時走勢</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="crypto-tbody">
+              <!-- Dynamically populated via JS -->
+              <tr>
+                <td colspan="10" class="loading-state">
+                  <div class="spinner"></div>
+                  <span>正在連接幣安撮合數據並計算 5 分鐘滾動漲幅...</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Card Grid View (Hidden by default) -->
+        <div class="cards-grid" id="cards-container" style="display: none;">
+          <!-- Dynamically populated via JS -->
+        </div>
+      </div>
+
+      <!-- Right: Real-time Pump Radar Feed -->
+      <aside class="radar-aside">
+        <div class="radar-panel">
+          <div class="radar-header">
+            <div class="radar-title-box">
+              <span class="radar-pulse-ring"></span>
+              <span class="radar-title">即時暴漲異動廣播</span>
+            </div>
+            <span class="radar-badge-count" id="radar-alert-count">0 則異動</span>
+          </div>
+
+          <div class="radar-tip-banner">
+            <span>💡 系統已啟用自動去重與放量過濾，過濾虛假刷量雜訊</span>
+          </div>
+
+          <div class="radar-feed-list" id="radar-feed">
+            <!-- Empty state -->
+            <div class="radar-empty" id="radar-empty-state">
+              <div class="radar-empty-icon">📡</div>
+              <div class="radar-empty-text">正在監控全網異動...</div>
+              <div class="radar-empty-sub">當有幣種 5 分鐘拉盤 ≥ <span id="radar-threshold-val">2.0%</span> 且放量時，將在此秒速廣播！</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+    </main>
+
+  </div>
+
+  <!-- Deep Dive Coin Detail Modal -->
+  <div class="modal-backdrop" id="coin-modal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-token-info">
+          <span class="modal-token-symbol" id="modal-symbol">BTCUSDT</span>
+          <span class="modal-token-badge">BINANCE SPOT</span>
+        </div>
+        <button class="modal-close-btn" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-price-banner">
+          <div class="modal-price-col">
+            <span class="modal-label">即時現價</span>
+            <span class="modal-price-val" id="modal-price">$0.00</span>
+          </div>
+          <div class="modal-gain-col">
+            <span class="modal-label">5分鐘漲幅</span>
+            <span class="modal-gain-val" id="modal-gain-5m">+0.00%</span>
+          </div>
+          <div class="modal-spike-col">
+            <span class="modal-label">爆量倍數</span>
+            <span class="modal-spike-val" id="modal-spike">0.0x</span>
+          </div>
+        </div>
+
+        <!-- High-res Canvas Trend Chart -->
+        <div class="modal-chart-section">
+          <div class="chart-header">
+            <span class="chart-title">📈 5分鐘高頻撮合走勢 (Tick By Tick)</span>
+            <span class="chart-legend" id="modal-chart-range">5M High: -- | Low: --</span>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="modal-canvas" width="600" height="180"></canvas>
+          </div>
+        </div>
+
+        <!-- Detailed Metrics Grid -->
+        <div class="modal-stats-grid">
+          <div class="stat-cell">
+            <span class="stat-name">1分鐘衝刺速度</span>
+            <span class="stat-val" id="modal-chg-1m">+0.00%</span>
+          </div>
+          <div class="stat-cell">
+            <span class="stat-name">15分鐘波段漲幅</span>
+            <span class="stat-val" id="modal-chg-15m">+0.00%</span>
+          </div>
+          <div class="stat-cell">
+            <span class="stat-name">24小時累計漲幅</span>
+            <span class="stat-val" id="modal-chg-24h">+0.00%</span>
+          </div>
+          <div class="stat-cell">
+            <span class="stat-name">5分鐘成交額</span>
+            <span class="stat-val" id="modal-vol-5m">$0</span>
+          </div>
+          <div class="stat-cell">
+            <span class="stat-name">24小時總成交額</span>
+            <span class="stat-val" id="modal-vol-24h">$0</span>
+          </div>
+          <div class="stat-cell">
+            <span class="stat-name">綜合異動評分</span>
+            <span class="stat-val highlight-amber" id="modal-surge-score">0.0</span>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <a href="#" target="_blank" class="action-btn btn-binance" id="modal-binance-link">
+            <span>⚡ 前往幣安現貨交易</span>
+          </a>
+          <a href="#" target="_blank" class="action-btn btn-tradingview" id="modal-tv-link">
+            <span>📊 TradingView K線圖</span>
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
