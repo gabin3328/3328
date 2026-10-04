@@ -315,21 +315,131 @@ class CryptoSurgeEngine:
                 logger.debug(f"Periodic resync error: {e}")
 
     def get_top_gainers_5m(self, limit: int = 50, min_vol: float = 0.0) -> List[dict]:
-        """Get top gainers in the last 5 minutes with optional volume filter (strictly positive)"""
+        """Get top gainers in the last 5 minutes with optional volume filter"""
         coins = [
             c for c in self.market_data.values() 
-            if c['vol_5m'] >= min_vol and c['price_chg_5m'] > 0
+            if c.get('vol_5m', 0.0) >= min_vol and c.get('price_chg_5m', 0.0) > 0
         ]
-        coins.sort(key=lambda x: x['price_chg_5m'], reverse=True)
+        coins.sort(key=lambda x: x.get('price_chg_5m', 0.0), reverse=True)
         return coins[:limit]
+
+    def get_top_losers_5m(self, limit: int = 50, min_vol: float = 0.0) -> List[dict]:
+        """Get top losers in the last 5 minutes with optional volume filter"""
+        coins = [
+            c for c in self.market_data.values() 
+            if c.get('vol_5m', 0.0) >= min_vol and c.get('price_chg_5m', 0.0) < 0
+        ]
+        coins.sort(key=lambda x: x.get('price_chg_5m', 0.0))
+        return coins[:limit]
+
+    def _generate_coin_signal(self, coin: dict, is_gainer: bool) -> dict:
+        """Generate quantitative trading suggestion: Long/Short, 1-5 Stars, TP%, SL%, Reason"""
+        sym = coin.get('symbol', '')
+        p = coin.get('last_price', 0.0)
+        chg_5m = coin.get('price_chg_5m', 0.0)
+        chg_1m = coin.get('price_chg_1m', 0.0)
+        chg_15m = coin.get('price_chg_15m', chg_5m)
+        vol_5m = coin.get('vol_5m', 0.0)
+        vol_spike = coin.get('vol_spike', 1.0)
+        h5 = coin.get('high_5m', p)
+        l5 = coin.get('low_5m', p)
+
+        span = h5 - l5
+        pos = (p - l5) / span if span > 1e-8 else 0.5
+
+        if is_gainer:
+            if pos < 0.4 and chg_1m < 0:
+                action = "做空"
+                action_code = "SHORT"
+                stars = 5 if vol_spike >= 4.0 else (4 if vol_spike >= 2.0 else 3)
+                tp_pct = round(min(max(abs(chg_5m) * 0.8, 2.5), 8.0), 1)
+                sl_pct = round(max((h5 - p) / max(p, 1e-8) * 100 * 1.1, 1.2), 1)
+                reason = "高位放量插針留長上影，衝高動能衰竭，反抽逢高摸頂空"
+            elif pos >= 0.65 and chg_1m >= 0:
+                action = "做多"
+                action_code = "LONG"
+                stars = 5 if vol_spike >= 2.5 else 4
+                tp_pct = round(min(max(abs(chg_5m) * 0.9, 2.8), 7.0), 1)
+                sl_pct = round(max((p - l5) / max(p, 1e-8) * 100 * 0.8, 1.3), 1)
+                reason = "5M 放量突破強勢收高，多頭買盤充沛，順勢追多吃慣性"
+            else:
+                action = "做多" if chg_1m >= 0 else "做空"
+                action_code = "LONG" if action == "做多" else "SHORT"
+                stars = 3
+                tp_pct = round(min(max(abs(chg_5m) * 0.7, 2.0), 5.0), 1)
+                sl_pct = 1.5
+                reason = "5M 震盪推升中，多空爭奪激烈，輕倉試單控風險"
+        else:
+            if pos > 0.5 and chg_1m > 0:
+                action = "做多"
+                action_code = "LONG"
+                stars = 4 if vol_spike >= 2.0 else 3
+                tp_pct = round(min(max(abs(chg_5m) * 0.8, 2.5), 6.0), 1)
+                sl_pct = round(max((p - l5) / max(p, 1e-8) * 100 * 1.1, 1.2), 1)
+                reason = "5M 急殺打出下影線支撐，短線空頭力竭，博超跌快速反彈"
+            elif pos <= 0.35 and chg_1m <= 0:
+                action = "做空"
+                action_code = "SHORT"
+                stars = 5 if vol_spike >= 2.5 or abs(chg_5m) >= 2.5 else 4
+                tp_pct = round(min(max(abs(chg_5m) * 0.9, 3.0), 8.0), 1)
+                sl_pct = round(max((h5 - p) / max(p, 1e-8) * 100 * 0.7, 1.4), 1)
+                reason = "5M 放量破位大陰線，貼近最低點，空方慣性下殺順勢空"
+            else:
+                action = "做空"
+                action_code = "SHORT"
+                stars = 3
+                tp_pct = round(min(max(abs(chg_5m) * 0.7, 2.2), 5.0), 1)
+                sl_pct = 1.5
+                reason = "5M 破位陰跌，反彈無量壓制明顯，逢高佈局空單"
+
+        rr = round(tp_pct / max(sl_pct, 0.1), 1)
+
+        return {
+            'symbol': sym,
+            'base_asset': coin.get('base_asset', sym.replace('USDT', '')),
+            'last_price': p,
+            'price_chg_5m': chg_5m,
+            'price_chg_1m': chg_1m,
+            'vol_5m': vol_5m,
+            'vol_spike': vol_spike,
+            'high_5m': h5,
+            'low_5m': l5,
+            'action': action,
+            'action_code': action_code,
+            'stars': stars,
+            'tp_pct': tp_pct,
+            'sl_pct': sl_pct,
+            'rr_ratio': rr,
+            'reason': reason
+        }
+
+    def get_5m_strategy_signals(self, limit: int = 5, min_vol: float = 3000.0) -> dict:
+        """Return Top 5 Surge & Top 5 Dump coins with actionable trade recommendations"""
+        valid_coins = [c for c in self.market_data.values() if c.get('vol_5m', 0.0) >= min_vol]
+        
+        # Gainers
+        gainers = [c for c in valid_coins if c.get('price_chg_5m', 0.0) > 0]
+        gainers.sort(key=lambda x: x.get('price_chg_5m', 0.0), reverse=True)
+        top_gainers = gainers[:limit]
+        
+        # Losers
+        losers = [c for c in valid_coins if c.get('price_chg_5m', 0.0) < 0]
+        losers.sort(key=lambda x: x.get('price_chg_5m', 0.0))
+        top_losers = losers[:limit]
+        
+        return {
+            'gainers': [self._generate_coin_signal(c, is_gainer=True) for c in top_gainers],
+            'losers': [self._generate_coin_signal(c, is_gainer=False) for c in top_losers],
+            'updated_at': self.last_update_ts
+        }
 
     def get_top_volume_spikes(self, limit: int = 20, min_vol: float = 5000.0) -> List[dict]:
         """Get coins with the highest volume surge ratio in the last 5 minutes"""
         coins = [
             c for c in self.market_data.values() 
-            if c['vol_5m'] >= min_vol and c['price_chg_5m'] > 0
+            if c.get('vol_5m', 0.0) >= min_vol and c.get('price_chg_5m', 0.0) > 0
         ]
-        coins.sort(key=lambda x: x['vol_spike'], reverse=True)
+        coins.sort(key=lambda x: x.get('vol_spike', 0.0), reverse=True)
         return coins[:limit]
 
     def get_market_overview(self) -> dict:

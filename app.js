@@ -145,6 +145,11 @@
     totalTrackedCoins: document.getElementById('total-tracked-coins'),
     total5mVol: document.getElementById('total-5m-vol'),
 
+    // 5M Strategy Signals Radar
+    signalsPumpCards: document.getElementById('signals-pump-cards'),
+    signalsDumpCards: document.getElementById('signals-dump-cards'),
+    signalsUpdateTime: document.getElementById('signals-update-time'),
+
     // Coin Modal
     coinModal: document.getElementById('coin-modal'),
     modalCardElement: document.getElementById('modal-card-element'),
@@ -205,10 +210,24 @@
     btnTestNotify: document.getElementById('btn-test-notify')
   };
 
-  // --- Watchlist Functions ---
+  // --- Global Interaction Helpers ---
   window.cyberpumpToggleStar = function (symbol, event) {
     if (event) event.stopPropagation();
     toggleWatchlist(symbol);
+  };
+
+  window.cyberpumpOpenSymbol = function (symbol) {
+    if (!symbol) return;
+    const s = symbol.toUpperCase();
+    const c = state.marketData[s] || {
+      symbol: s,
+      base_asset: s.replace('USDT', ''),
+      last_price: 0,
+      price_chg_5m: 0,
+      vol_5m: 0,
+      vol_spike: 1.0
+    };
+    openModal(c);
   };
 
   function toggleWatchlist(symbol) {
@@ -720,6 +739,7 @@
 
         if (msg.type === 'TICK') {
           if (msg.overview) updateOverviewUI(msg.overview);
+          if (msg.signals_5m) render5mSignals(msg.signals_5m);
           if (msg.top_5m && Array.isArray(msg.top_5m)) {
             const now = Date.now() / 1000;
             msg.top_5m.forEach(coin => {
@@ -1070,6 +1090,10 @@
     };
 
     updateOverviewUI(overview);
+    const clientSignals = generateClient5mSignals();
+    if (clientSignals) {
+      render5mSignals(clientSignals);
+    }
     renderMarket();
   }
 
@@ -1126,6 +1150,211 @@
 
     el.totalTrackedCoins.textContent = ov.total_tracked || 0;
     el.total5mVol.textContent = `$${(ov.total_5m_volume_usdt / 1e6).toFixed(2)} M`;
+  }
+
+  // --- 5M Quantitative Strategy Signals Radar ---
+  function generateClient5mSignals() {
+    const coins = Object.values(state.marketData).filter(c => (c.vol_5m || 0) >= 1000);
+    if (!coins.length) return null;
+
+    const gainers = [...coins]
+      .filter(c => (c.price_chg_5m || 0) > 0)
+      .sort((a, b) => b.price_chg_5m - a.price_chg_5m)
+      .slice(0, 5)
+      .map(c => generateSignalData(c, true));
+
+    const losers = [...coins]
+      .filter(c => (c.price_chg_5m || 0) < 0)
+      .sort((a, b) => a.price_chg_5m - b.price_chg_5m)
+      .slice(0, 5)
+      .map(c => generateSignalData(c, false));
+
+    return {
+      gainers,
+      losers,
+      updated_at: Date.now() / 1000
+    };
+  }
+
+  function generateSignalData(coin, isGainer) {
+    const sym = coin.symbol || '';
+    const p = coin.last_price || 0;
+    const chg5m = coin.price_chg_5m || 0;
+    const chg1m = coin.price_chg_1m || 0;
+    const h5 = coin.high_5m || p;
+    const l5 = coin.low_5m || p;
+    const vol5m = coin.vol_5m || 0;
+    const volSpike = coin.vol_spike || 1.0;
+
+    const span = h5 - l5;
+    const pos = span > 1e-8 ? (p - l5) / span : 0.5;
+
+    let action = '做多';
+    let actionCode = 'LONG';
+    let stars = 3;
+    let tpPct = 3.0;
+    let slPct = 1.5;
+    let reason = '';
+
+    if (isGainer) {
+      if (pos < 0.4 && chg1m < 0) {
+        action = '做空';
+        actionCode = 'SHORT';
+        stars = volSpike >= 4.0 ? 5 : (volSpike >= 2.0 ? 4 : 3);
+        tpPct = Math.min(Math.max(Math.abs(chg5m) * 0.8, 2.5), 8.0);
+        slPct = Math.max(((h5 - p) / Math.max(p, 1e-8)) * 100 * 1.1, 1.2);
+        reason = '高位放量插針留長上影，衝高動能衰竭，反抽逢高摸頂空';
+      } else if (pos >= 0.65 && chg1m >= 0) {
+        action = '做多';
+        actionCode = 'LONG';
+        stars = volSpike >= 2.5 ? 5 : 4;
+        tpPct = Math.min(Math.max(Math.abs(chg5m) * 0.9, 2.8), 7.0);
+        slPct = Math.max(((p - l5) / Math.max(p, 1e-8)) * 100 * 0.8, 1.3);
+        reason = '5M 放量突破強勢收高，多頭買盤充沛，順勢追多吃慣性';
+      } else {
+        action = chg1m >= 0 ? '做多' : '做空';
+        actionCode = action === '做多' ? 'LONG' : 'SHORT';
+        stars = 3;
+        tpPct = Math.min(Math.max(Math.abs(chg5m) * 0.7, 2.0), 5.0);
+        slPct = 1.5;
+        reason = '5M 震盪推升中，多空爭奪激烈，輕倉試單控風險';
+      }
+    } else {
+      if (pos > 0.5 && chg1m > 0) {
+        action = '做多';
+        actionCode = 'LONG';
+        stars = volSpike >= 2.0 ? 4 : 3;
+        tpPct = Math.min(Math.max(Math.abs(chg5m) * 0.8, 2.5), 6.0);
+        slPct = Math.max(((p - l5) / Math.max(p, 1e-8)) * 100 * 1.1, 1.2);
+        reason = '5M 急殺打出下影線支撐，短線空頭力竭，博超跌快速反彈';
+      } else if (pos <= 0.35 && chg1m <= 0) {
+        action = '做空';
+        actionCode = 'SHORT';
+        stars = (volSpike >= 2.5 || Math.abs(chg5m) >= 2.5) ? 5 : 4;
+        tpPct = Math.min(Math.max(Math.abs(chg5m) * 0.9, 3.0), 8.0);
+        slPct = Math.max(((h5 - p) / Math.max(p, 1e-8)) * 100 * 0.7, 1.4);
+        reason = '5M 放量破位大陰線，貼近最低點，空方慣性下殺順勢空';
+      } else {
+        action = '做空';
+        actionCode = 'SHORT';
+        stars = 3;
+        tpPct = Math.min(Math.max(Math.abs(chg5m) * 0.7, 2.2), 5.0);
+        slPct = 1.5;
+        reason = '5M 破位陰跌，反彈無量壓制明顯，逢高佈局空單';
+      }
+    }
+
+    tpPct = parseFloat(tpPct.toFixed(1));
+    slPct = parseFloat(slPct.toFixed(1));
+    const rr = parseFloat((tpPct / Math.max(slPct, 0.1)).toFixed(1));
+
+    return {
+      symbol: sym,
+      base_asset: coin.base_asset || sym.replace('USDT', ''),
+      last_price: p,
+      price_chg_5m: chg5m,
+      price_chg_1m: chg1m,
+      vol_5m: vol5m,
+      vol_spike: volSpike,
+      high_5m: h5,
+      low_5m: l5,
+      action,
+      action_code: actionCode,
+      stars,
+      tp_pct: tpPct,
+      sl_pct: slPct,
+      rr_ratio: rr,
+      reason
+    };
+  }
+
+  function render5mSignals(signals) {
+    if (!signals) return;
+
+    if (el.signalsUpdateTime) {
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      el.signalsUpdateTime.textContent = `即時更新: ${timeStr}`;
+    }
+
+    if (signals.gainers && el.signalsPumpCards) {
+      renderSignalCardsList(el.signalsPumpCards, signals.gainers, true);
+    }
+
+    if (signals.losers && el.signalsDumpCards) {
+      renderSignalCardsList(el.signalsDumpCards, signals.losers, false);
+    }
+  }
+
+  function renderSignalCardsList(container, list, isPump) {
+    if (!list || !list.length) {
+      container.innerHTML = `
+        <div class="signals-loading-placeholder">
+          <span>暫無充足成交量之標的</span>
+        </div>`;
+      return;
+    }
+
+    const html = list.map((item, idx) => {
+      const isLong = item.action_code === 'LONG' || item.action === '做多';
+      const actionClass = isLong ? 'action-long' : 'action-short';
+      const actionText = isLong ? '🟢 建議做多 LONG' : '🔴 建議做空 SHORT';
+      const chgClass = item.price_chg_5m >= 0 ? 'badge-pump' : 'badge-dump';
+      const chgSign = item.price_chg_5m >= 0 ? '+' : '';
+      const starIcons = '★'.repeat(item.stars) + '☆'.repeat(Math.max(0, 5 - item.stars));
+      const cardTypeClass = isPump ? 'pump-card' : 'dump-card';
+
+      return `
+        <div class="signal-card ${cardTypeClass}" data-symbol="${item.symbol}" onclick="window.cyberpumpOpenSymbol('${item.symbol}')">
+          <div class="signal-card-header">
+            <div class="signal-token-left">
+              <span class="signal-rank-badge">#${idx + 1}</span>
+              <span class="signal-symbol">${item.base_asset}<span class="signal-symbol-sub">/USDT</span></span>
+            </div>
+            <div class="signal-price-right">
+              <span class="signal-price">$${formatPrice(item.last_price)}</span>
+              <span class="signal-chg-badge ${chgClass}">${chgSign}${item.price_chg_5m.toFixed(2)}%</span>
+            </div>
+          </div>
+          <div class="signal-card-body">
+            <div class="signal-action-row">
+              <div class="signal-action-badge ${actionClass}">
+                ${actionText}
+              </div>
+              <div class="signal-stars" title="信心評級: ${item.stars} 顆星">
+                <span class="stars-icons">${starIcons}</span>
+                <span class="stars-text">${item.stars}/5 顆星</span>
+              </div>
+            </div>
+            <div class="signal-targets-grid">
+              <div class="target-item target-tp">
+                <span class="target-label">預期止盈 (TP)</span>
+                <span class="target-val highlight-green">+${item.tp_pct}%</span>
+              </div>
+              <div class="target-item target-sl">
+                <span class="target-label">建議止損 (SL)</span>
+                <span class="target-val highlight-red">-${item.sl_pct}%</span>
+              </div>
+              <div class="target-item target-rr">
+                <span class="target-label">盈虧比 (R:R)</span>
+                <span class="target-val highlight-cyan">1 : ${item.rr_ratio}</span>
+              </div>
+            </div>
+            <div class="signal-footer-row">
+              <div class="signal-vol-info">
+                <span>5M 成交: <strong>$${formatNumber(item.vol_5m)}</strong></span>
+                <span class="signal-spike-tag">爆量 ${item.vol_spike.toFixed(1)}x</span>
+              </div>
+              <div class="signal-reason">
+                💡 <strong>策略邏輯:</strong> ${item.reason}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.innerHTML = html;
   }
 
   // --- Rendering Market List / Table with In-Place Keyed Reconciliation ---
@@ -2204,6 +2433,19 @@
     });
   }
 
+  async function loadInitialSignals() {
+    const isLocalhost = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+    if (isLocalhost && window.location.port === '8000') {
+      try {
+        const res = await fetch('/api/signals/5m');
+        if (res.ok) {
+          const data = await res.json();
+          render5mSignals(data);
+        }
+      } catch (e) {}
+    }
+  }
+
   function init() {
     setupEventListeners();
     updateWatchlistUI();
@@ -2213,6 +2455,7 @@
       });
     }
     initDataFeed();
+    loadInitialSignals();
   }
 
   window.addEventListener('DOMContentLoaded', init);

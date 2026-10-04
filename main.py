@@ -58,11 +58,17 @@ async def get_market():
     overview = engine.get_market_overview()
     top_5m = engine.get_top_gainers_5m(limit=15)
     top_spikes = engine.get_top_volume_spikes(limit=10)
+    signals_5m = engine.get_5m_strategy_signals(limit=5)
     return {
         "overview": overview,
         "top_5m": top_5m,
-        "top_spikes": top_spikes
+        "top_spikes": top_spikes,
+        "signals_5m": signals_5m
     }
+
+@app.get("/api/signals/5m")
+async def get_signals_5m():
+    return engine.get_5m_strategy_signals(limit=5)
 
 @app.get("/api/symbols")
 async def get_symbols(
@@ -167,13 +173,15 @@ async def websocket_endpoint(websocket: WebSocket):
             overview = engine.get_market_overview()
             top_gainers = engine.get_top_gainers_5m(limit=25)
             top_spikes = engine.get_top_volume_spikes(limit=10)
+            signals_5m = engine.get_5m_strategy_signals(limit=5)
 
             payload = {
                 "type": "TICK",
                 "ts": engine.last_update_ts,
                 "overview": overview,
                 "top_5m": top_gainers,
-                "top_spikes": top_spikes
+                "top_spikes": top_spikes,
+                "signals_5m": signals_5m
             }
             await websocket.send_json(payload)
             await asyncio.sleep(1.0)

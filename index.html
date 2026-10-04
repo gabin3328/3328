@@ -184,6 +184,62 @@
       </div>
     </section>
 
+    <!-- 5M Top 5 Surge & Dump Real-time Quantitative Strategy Dashboard -->
+    <section class="signals-radar-section" id="signals-radar-section">
+      <div class="signals-section-header">
+        <div class="signals-header-left">
+          <div class="signals-header-badge">
+            <span class="pulse-radar-dot"></span>
+            <span>AI 量化策略雷達</span>
+          </div>
+          <h2 class="signals-title">5分鐘暴漲暴跌即時策略看板 <span class="accent-sub">5M TOP 5 SIGNALS</span></h2>
+          <span class="signals-desc">即時全網高頻掃描，精確計算多空動能衰竭與突破，給予做多/做空、1-5顆心評級與止盈止損趴數建議</span>
+        </div>
+        <div class="signals-header-right">
+          <div class="signals-live-ticker">
+            <span class="live-dot-green"></span>
+            <span id="signals-update-time">實時撮合計算中...</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="signals-columns-grid">
+        <!-- Column 1: Top 5 Pumping (5M 暴漲) -->
+        <div class="signals-col pump-col">
+          <div class="signals-col-header pump-header">
+            <div class="col-title-group">
+              <span class="col-icon">🚀</span>
+              <span class="col-title-text">5分鐘「暴漲」Top 5 標的</span>
+            </div>
+            <span class="col-tag tag-pump">PUMP TOP 5</span>
+          </div>
+          <div class="signals-cards-list" id="signals-pump-cards">
+            <div class="signals-loading-placeholder">
+              <div class="spinner-small"></div>
+              <span>正在計算 5 分鐘暴漲排行與多空訊號...</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Column 2: Top 5 Dumping (5M 暴跌) -->
+        <div class="signals-col dump-col">
+          <div class="signals-col-header dump-header">
+            <div class="col-title-group">
+              <span class="col-icon">🩸</span>
+              <span class="col-title-text">5分鐘「暴跌」Top 5 標的</span>
+            </div>
+            <span class="col-tag tag-dump">DUMP TOP 5</span>
+          </div>
+          <div class="signals-cards-list" id="signals-dump-cards">
+            <div class="signals-loading-placeholder">
+              <div class="spinner-small"></div>
+              <span>正在計算 5 分鐘暴跌排行與多空訊號...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Target Monitor & Active Alarm Rules Control Panel -->
     <section class="monitor-control-panel">
       <!-- Left: Active Alarm Rules Status (怎麼樣會有警報) -->
