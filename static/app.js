@@ -529,10 +529,10 @@
       coins = coins.filter(c => c.vol_5m >= state.minVolume);
     }
 
+    // 嚴格只保留上漲幣種（5分鐘漲幅 > 0）
+    coins = coins.filter(c => c.price_chg_5m > 0);
+
     coins.sort((a, b) => {
-      if (state.currentSort === 'dump_5m') {
-        return a.price_chg_5m - b.price_chg_5m;
-      }
       return (b[state.currentSort] || 0) - (a[state.currentSort] || 0);
     });
 

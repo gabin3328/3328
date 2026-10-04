@@ -83,6 +83,9 @@ async def get_symbols(
     if min_vol_5m > 0:
         coins = [c for c in coins if c['vol_5m'] >= min_vol_5m]
 
+    # 嚴格只保留5分鐘上漲幣種
+    coins = [c for c in coins if c.get('price_chg_5m', 0.0) > 0]
+
     # Sorting
     valid_sorts = {
         'price_chg_5m', 'price_chg_1m', 'price_chg_15m', 

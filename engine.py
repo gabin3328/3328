@@ -315,10 +315,10 @@ class CryptoSurgeEngine:
                 logger.debug(f"Periodic resync error: {e}")
 
     def get_top_gainers_5m(self, limit: int = 50, min_vol: float = 0.0) -> List[dict]:
-        """Get top gainers in the last 5 minutes with optional volume filter"""
+        """Get top gainers in the last 5 minutes with optional volume filter (strictly positive)"""
         coins = [
             c for c in self.market_data.values() 
-            if c['vol_5m'] >= min_vol
+            if c['vol_5m'] >= min_vol and c['price_chg_5m'] > 0
         ]
         coins.sort(key=lambda x: x['price_chg_5m'], reverse=True)
         return coins[:limit]
