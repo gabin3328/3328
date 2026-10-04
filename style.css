@@ -1287,10 +1287,20 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 20px;
   width: 100%;
-  max-width: 660px;
-  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.8), 0 0 35px rgba(0, 245, 160, 0.15);
-  overflow: hidden;
+  max-width: 980px;
+  max-height: 92vh;
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.8), 0 0 45px rgba(0, 245, 160, 0.18);
+  overflow-y: auto;
+  transition: all 0.25s ease;
   animation: scaleUp 0.25s ease-out;
+}
+
+.modal-card.fullscreen {
+  max-width: 98vw;
+  width: 98vw;
+  height: 96vh;
+  max-height: 96vh;
+  border-radius: 14px;
 }
 
 @keyframes scaleUp {
@@ -1302,9 +1312,13 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 22px;
+  padding: 14px 22px;
   background: rgba(255, 255, 255, 0.03);
   border-bottom: 1px solid var(--border-subtle);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(10px);
 }
 
 .modal-token-info {
@@ -1323,26 +1337,101 @@ body {
 .modal-token-badge {
   font-size: 0.7rem;
   font-weight: 700;
-  padding: 2px 7px;
+  padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-secondary);
+  background: rgba(0, 245, 160, 0.12);
+  color: var(--neon-green);
+  border: 1px solid rgba(0, 245, 160, 0.25);
 }
 
-.modal-close-btn {
-  background: none;
+.modal-live-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--neon-green);
+  box-shadow: 0 0 8px var(--neon-green);
+  animation: pulse-dot 1.2s infinite;
+}
+
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-icon-btn, .modal-close-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 1.05rem;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-icon-btn:hover, .modal-close-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Modal Chart Tabs & Containers */
+.modal-chart-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 4px;
+}
+
+.chart-tab-btn {
+  background: transparent;
   border: none;
   color: var(--text-muted);
-  font-size: 1.2rem;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 8px;
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 6px;
   transition: all 0.2s ease;
 }
 
-.modal-close-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+.chart-tab-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.chart-tab-btn.active {
+  background: rgba(0, 245, 160, 0.12);
+  color: var(--neon-green);
+  border: 1px solid rgba(0, 245, 160, 0.25);
+}
+
+.tv-chart-wrapper {
+  width: 100%;
+  height: 420px;
+  background: #131722;
+  border-radius: 12px;
+  border: 1px solid var(--border-card);
+  overflow: hidden;
+  transition: height 0.25s ease;
+}
+
+.tradingview-embed-box {
+  width: 100%;
+  height: 100%;
+}
+
+.modal-card.fullscreen .tv-chart-wrapper {
+  height: calc(96vh - 280px);
+}
+
+.modal-card.fullscreen .canvas-wrapper canvas {
+  height: calc(96vh - 300px);
 }
 
 .modal-body {

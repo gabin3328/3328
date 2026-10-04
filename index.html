@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./style.css">
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
 <body>
   <!-- Ambient glowing background lights -->
@@ -289,18 +290,22 @@
 
   <!-- Deep Dive Coin Detail Modal -->
   <div class="modal-backdrop" id="coin-modal" style="display: none;">
-    <div class="modal-card">
+    <div class="modal-card" id="modal-card-element">
       <div class="modal-header">
         <div class="modal-token-info">
           <span class="modal-token-symbol" id="modal-symbol">BTCUSDT</span>
-          <span class="modal-token-badge">BINANCE SPOT</span>
+          <span class="modal-token-badge">BINANCE SPOT LIVE</span>
+          <span class="modal-live-pulse" title="即時撮合中"></span>
         </div>
-        <button class="modal-close-btn" id="modal-close">✕</button>
+        <div class="modal-header-actions">
+          <button class="modal-icon-btn" id="modal-fullscreen-btn" title="切換放大全螢幕視窗">⛶</button>
+          <button class="modal-close-btn" id="modal-close" title="關閉視窗">✕</button>
+        </div>
       </div>
       <div class="modal-body">
         <div class="modal-price-banner">
           <div class="modal-price-col">
-            <span class="modal-label">即時現價</span>
+            <span class="modal-label">即時現價 (即時更新)</span>
             <span class="modal-price-val" id="modal-price">$0.00</span>
           </div>
           <div class="modal-gain-col">
@@ -313,14 +318,29 @@
           </div>
         </div>
 
-        <!-- High-res Canvas Trend Chart -->
-        <div class="modal-chart-section">
+        <!-- Chart Mode Tabs -->
+        <div class="modal-chart-tabs">
+          <button class="chart-tab-btn active" id="tab-tv-chart">
+            <span>📊 TradingView 實時 K 線圖 (即時跳動)</span>
+          </button>
+          <button class="chart-tab-btn" id="tab-canvas-chart">
+            <span>⚡ 5分鐘高頻撮合分秒圖 (Tick-by-Tick)</span>
+          </button>
+        </div>
+
+        <!-- TradingView Embedded Container -->
+        <div class="tv-chart-wrapper" id="tv-chart-wrapper">
+          <div id="tradingview-embed-box" class="tradingview-embed-box"></div>
+        </div>
+
+        <!-- High-res Canvas Trend Chart (Can be toggled) -->
+        <div class="modal-chart-section" id="canvas-chart-section" style="display: none;">
           <div class="chart-header">
-            <span class="chart-title">📈 5分鐘高頻撮合走勢 (Tick By Tick)</span>
+            <span class="chart-title">⚡ 5分鐘逐筆撮合成交走勢 (即時動態刷新)</span>
             <span class="chart-legend" id="modal-chart-range">5M High: -- | Low: --</span>
           </div>
           <div class="canvas-wrapper">
-            <canvas id="modal-canvas" width="600" height="180"></canvas>
+            <canvas id="modal-canvas" width="900" height="320"></canvas>
           </div>
         </div>
 

@@ -28,7 +28,9 @@
     alertsList: [],
     alertCooldown: {},
     previousPrices: {},
-    audioCtx: null
+    audioCtx: null,
+    activeModalSymbol: null,
+    activeChartTab: 'tv'
   };
 
   // DOM Elements
@@ -175,6 +177,9 @@
                 }));
               }
             });
+          }
+          if (state.activeModalSymbol && state.marketData[state.activeModalSymbol]) {
+            updateModalDynamic(state.marketData[state.activeModalSymbol]);
           }
           renderMarket();
         } else if (msg.type === 'ALERT') {
@@ -379,6 +384,10 @@
       // Check pump alert
       checkClientAlert(coin, now);
     });
+
+    if (state.activeModalSymbol && state.marketData[state.activeModalSymbol]) {
+      updateModalDynamic(state.marketData[state.activeModalSymbol]);
+    }
 
     computeAndRenderClientSide();
   }
@@ -743,10 +752,36 @@
     el.radarFeed.appendChild(fragment);
   }
 
-  async function openModal(coin) {
-    if (!coin) return;
+  function loadTradingViewWidget(symbol) {
+    const box = document.getElementById('tradingview-embed-box');
+    if (!box) return;
+    box.innerHTML = '';
 
-    el.modalSymbol.textContent = coin.symbol;
+    if (window.TradingView) {
+      new window.TradingView.widget({
+        autosize: true,
+        symbol: `BINANCE:${symbol}`,
+        interval: "1",
+        timezone: "Asia/Taipei",
+        theme: "dark",
+        style: "1",
+        locale: "zh_TW",
+        toolbar_bg: "#0e121b",
+        enable_publishing: false,
+        hide_top_toolbar: false,
+        hide_legend: false,
+        save_image: false,
+        container_id: "tradingview-embed-box",
+        studies: ["Volume@tv-basicstudies"]
+      });
+    } else {
+      box.innerHTML = '<div style="color:var(--text-muted);display:flex;align-items:center;justify-content:center;height:100%;">TradingView 即時圖表載入中...</div>';
+    }
+  }
+
+  function updateModalDynamic(coin) {
+    if (!coin || state.activeModalSymbol !== coin.symbol) return;
+
     el.modalPrice.textContent = `$${formatPrice(coin.last_price)}`;
     el.modalGain5m.textContent = `${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%`;
     el.modalGain5m.className = `modal-gain-val ${coin.price_chg_5m >= 0 ? 'highlight-green' : 'negative'}`;
@@ -758,18 +793,36 @@
     el.modalVol5m.textContent = `$${formatNumber(coin.vol_5m)}`;
     el.modalVol24h.textContent = `$${formatNumber(coin.vol_24h)}`;
     el.modalSurgeScore.textContent = `${coin.surge_score}`;
-
     el.modalChartRange.textContent = `5M 最高: $${formatPrice(coin.high_5m)} | 最低: $${formatPrice(coin.low_5m)}`;
+
+    // If canvas tab is visible, continuously redraw canvas in real time
+    if (state.activeChartTab === 'canvas') {
+      const buf = state.historyBuffers[coin.symbol];
+      if (buf && buf.length > 1) {
+        drawCanvasChart(buf.map(b => b.price), coin.price_chg_5m >= 0);
+      }
+    }
+  }
+
+  async function openModal(coin) {
+    if (!coin) return;
+    state.activeModalSymbol = coin.symbol;
+
+    el.modalSymbol.textContent = coin.symbol;
+    updateModalDynamic(coin);
+
     el.modalBinanceLink.href = `https://www.binance.com/zh-TC/trade/${coin.symbol}?type=spot`;
     el.modalTvLink.href = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol}`;
 
     el.coinModal.style.display = 'flex';
 
-    // Draw Canvas Chart from history buffer
+    // Embed live TradingView widget
+    loadTradingViewWidget(coin.symbol);
+
+    // Also prepare Canvas Chart from history buffer
     const buf = state.historyBuffers[coin.symbol];
     if (buf && buf.length > 1) {
-      const prices = buf.map(b => b.price);
-      drawCanvasChart(prices, coin.price_chg_5m >= 0);
+      drawCanvasChart(buf.map(b => b.price), coin.price_chg_5m >= 0);
     } else {
       drawCanvasChart(coin.sparkline || [coin.last_price], coin.price_chg_5m >= 0);
     }
@@ -777,6 +830,7 @@
 
   function drawCanvasChart(prices, isPositive) {
     const canvas = el.modalCanvas;
+    if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const width = canvas.width;
     const height = canvas.height;
@@ -787,7 +841,7 @@
     const min = Math.min(...prices);
     const max = Math.max(...prices);
     const range = (max - min) || 1;
-    const padding = 20;
+    const padding = 25;
 
     const points = prices.map((p, i) => {
       const x = padding + (i / (prices.length - 1)) * (width - padding * 2);
@@ -797,10 +851,10 @@
 
     const grad = ctx.createLinearGradient(0, 0, 0, height);
     if (isPositive) {
-      grad.addColorStop(0, 'rgba(0, 245, 160, 0.25)');
+      grad.addColorStop(0, 'rgba(0, 245, 160, 0.28)');
       grad.addColorStop(1, 'rgba(0, 245, 160, 0.0)');
     } else {
-      grad.addColorStop(0, 'rgba(255, 56, 96, 0.25)');
+      grad.addColorStop(0, 'rgba(255, 56, 96, 0.28)');
       grad.addColorStop(1, 'rgba(255, 56, 96, 0.0)');
     }
 
@@ -824,11 +878,11 @@
 
     const last = points[points.length - 1];
     ctx.beginPath();
-    ctx.arc(last.x, last.y, 5, 0, Math.PI * 2);
+    ctx.arc(last.x, last.y, 6, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
     ctx.strokeStyle = isPositive ? '#00f5a0' : '#ff3860';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.5;
     ctx.stroke();
   }
 
@@ -909,17 +963,80 @@
       renderMarket();
     });
 
+    // Chart Mode Tabs (TradingView vs Canvas)
+    const tabTv = document.getElementById('tab-tv-chart');
+    const tabCanvas = document.getElementById('tab-canvas-chart');
+    const tvWrapper = document.getElementById('tv-chart-wrapper');
+    const canvasSection = document.getElementById('canvas-chart-section');
+
+    if (tabTv && tabCanvas) {
+      tabTv.addEventListener('click', () => {
+        tabTv.classList.add('active');
+        tabCanvas.classList.remove('active');
+        if (tvWrapper) tvWrapper.style.display = 'block';
+        if (canvasSection) canvasSection.style.display = 'none';
+        state.activeChartTab = 'tv';
+      });
+
+      tabCanvas.addEventListener('click', () => {
+        tabCanvas.classList.add('active');
+        tabTv.classList.remove('active');
+        if (tvWrapper) tvWrapper.style.display = 'none';
+        if (canvasSection) canvasSection.style.display = 'block';
+        state.activeChartTab = 'canvas';
+        if (state.activeModalSymbol && state.marketData[state.activeModalSymbol]) {
+          const coin = state.marketData[state.activeModalSymbol];
+          const buf = state.historyBuffers[coin.symbol];
+          if (buf && buf.length > 1) {
+            drawCanvasChart(buf.map(b => b.price), coin.price_chg_5m >= 0);
+          }
+        }
+      });
+    }
+
+    // Fullscreen Toggle Button
+    const fullscreenBtn = document.getElementById('modal-fullscreen-btn');
+    const modalCard = document.getElementById('modal-card-element');
+    if (fullscreenBtn && modalCard) {
+      fullscreenBtn.addEventListener('click', () => {
+        modalCard.classList.toggle('fullscreen');
+        const isFull = modalCard.classList.contains('fullscreen');
+        fullscreenBtn.textContent = isFull ? '🗗' : '⛶';
+        fullscreenBtn.title = isFull ? '還原視窗大小' : '切換放大全螢幕視窗';
+        
+        // If canvas is active, adjust its width and redraw
+        if (state.activeChartTab === 'canvas' && state.activeModalSymbol) {
+          setTimeout(() => {
+            const canvas = el.modalCanvas;
+            if (canvas && canvas.parentElement) {
+              canvas.width = canvas.parentElement.clientWidth || 900;
+              const coin = state.marketData[state.activeModalSymbol];
+              const buf = state.historyBuffers[coin.symbol];
+              if (buf && buf.length > 1) {
+                drawCanvasChart(buf.map(b => b.price), coin.price_chg_5m >= 0);
+              }
+            }
+          }, 100);
+        }
+      });
+    }
+
     el.modalClose.addEventListener('click', () => {
       el.coinModal.style.display = 'none';
+      state.activeModalSymbol = null;
     });
 
     el.coinModal.addEventListener('click', (e) => {
-      if (e.target === el.coinModal) el.coinModal.style.display = 'none';
+      if (e.target === el.coinModal) {
+        el.coinModal.style.display = 'none';
+        state.activeModalSymbol = null;
+      }
     });
 
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && el.coinModal.style.display === 'flex') {
         el.coinModal.style.display = 'none';
+        state.activeModalSymbol = null;
       }
     });
   }
