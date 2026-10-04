@@ -1,6 +1,13 @@
 /**
  * CYBERPUMP 5M - Dual Mode Real-time Engine
- * Supports both Local FastAPI WebSocket Mode and Pure Client-side GitHub Pages Mode (Direct Binance WS/REST)
+ * Features:
+ * - Direct Binance WebSocket / REST connection & Local Python FastAPI fallback
+ * - Custom Watchlist (自選幣種監控) with persistent storage
+ * - Advanced Alert Condition Rules (自定義警報條件: 5M%、1M%、爆量倍數、最低成交量、監控範圍)
+ * - Multi-sound Chime Synthesizer (Web Audio API)
+ * - Browser Desktop Notifications (HTML5 Notification API)
+ * - Real-time TradingView Candlestick Widget + Real-time Canvas Tick-by-Tick chart
+ * - Dynamic Fullscreen Modal
  */
 
 (function () {
@@ -12,13 +19,48 @@
     'EURIUSDT', 'USDEUSDT', 'USDDUSDT'
   ]);
 
+  // Load Watchlist from LocalStorage
+  let initialWatchlist = new Set();
+  try {
+    const saved = localStorage.getItem('cyberpump_watchlist');
+    if (saved) initialWatchlist = new Set(JSON.parse(saved));
+  } catch (e) {}
+
+  // Load Target Prices from LocalStorage
+  let initialTargetPrices = {};
+  try {
+    const savedTargets = localStorage.getItem('cyberpump_target_prices');
+    if (savedTargets) initialTargetPrices = JSON.parse(savedTargets);
+  } catch (e) {}
+
+  // Load Alert Rules from LocalStorage
+  let initialRules = {
+    scope: 'all',       // 'all' | 'watchlist'
+    chg5m: 2.0,         // 5m gain >= X%
+    use1m: true,        // require 1m velocity
+    chg1m: 0.4,         // 1m velocity >= X%
+    useSpike: true,     // require volume spike
+    spike: 2.0,         // spike >= X times
+    minVol: 10000,      // 5m volume >= X USDT
+    sound: true,        // Web Audio chime
+    desktop: false,     // Desktop Push Notification
+    soundType: 'siren', // 'siren' | 'cyber' | 'radar' | 'ding'
+    cooldown: 120       // seconds cooldown per coin
+  };
+  try {
+    const savedRules = localStorage.getItem('cyberpump_alert_rules');
+    if (savedRules) initialRules = { ...initialRules, ...JSON.parse(savedRules) };
+  } catch (e) {}
+
   // State Management
   const state = {
     ws: null,
     wsConnected: false,
     isDirectMode: false,
-    soundEnabled: true,
-    alertThreshold: 2.0,
+    soundEnabled: initialRules.sound,
+    watchlist: initialWatchlist,
+    targetPrices: initialTargetPrices,
+    alertRules: initialRules,
     minVolume: 10000,
     searchQuery: '',
     currentSort: 'price_chg_5m',
@@ -30,7 +72,10 @@
     previousPrices: {},
     audioCtx: null,
     activeModalSymbol: null,
-    activeChartTab: 'tv'
+    activeChartTab: 'tv',
+    tvInterval: '5',
+    titleFlashingTimer: null,
+    activeAlarmCoin: null
   };
 
   // DOM Elements
@@ -38,10 +83,10 @@
     wsStatusBadge: document.getElementById('ws-status-badge'),
     wsStatusText: document.getElementById('ws-status-text'),
     wsPingBadge: document.getElementById('ws-ping-badge'),
+    btnAlertSettings: document.getElementById('btn-alert-settings'),
     btnSoundToggle: document.getElementById('btn-sound-toggle'),
     soundIcon: document.getElementById('sound-icon'),
     soundLabel: document.getElementById('sound-label'),
-    thresholdSelect: document.getElementById('threshold-select'),
     viewTableBtn: document.getElementById('view-table-btn'),
     viewCardsBtn: document.getElementById('view-cards-btn'),
     tableContainer: document.getElementById('table-container'),
@@ -55,7 +100,34 @@
     clearSearch: document.getElementById('clear-search'),
     minVolFilter: document.getElementById('min-vol-filter'),
     sortTabs: document.getElementById('sort-tabs'),
+    watchlistCountBadge: document.getElementById('watchlist-count-badge'),
+    tabWatchlistBtn: document.getElementById('tab-watchlist-btn'),
     
+    // Emergency Alarm Banner
+    alarmBanner: document.getElementById('alarm-banner'),
+    alarmBannerText: document.getElementById('alarm-banner-text'),
+    alarmBtnUnmute: document.getElementById('alarm-btn-unmute'),
+    alarmBtnInspect: document.getElementById('alarm-btn-inspect'),
+    alarmBtnStop: document.getElementById('alarm-btn-stop'),
+
+    // Monitor Control Panel
+    summaryChg5m: document.getElementById('summary-chg5m'),
+    summaryChg1m: document.getElementById('summary-chg1m'),
+    summarySpike: document.getElementById('summary-spike'),
+    summaryScope: document.getElementById('summary-scope'),
+    summarySound: document.getElementById('summary-sound'),
+    btnQuickSettings: document.getElementById('btn-quick-settings'),
+    btnQuickTest: document.getElementById('btn-quick-test'),
+
+    // Target Coin Controller
+    btnScopeAll: document.getElementById('btn-scope-all'),
+    btnScopeWatchlist: document.getElementById('btn-scope-watchlist'),
+    quickFavCount: document.getElementById('quick-fav-count'),
+    quickCoinInput: document.getElementById('quick-coin-input'),
+    btnQuickAdd: document.getElementById('btn-quick-add'),
+    hotChipsContainer: document.getElementById('hot-chips-container'),
+    monitoredPillsList: document.getElementById('monitored-pills-list'),
+
     // Overview Cards
     topGainerSymbol: document.getElementById('top-gainer-symbol'),
     topGainerPrice: document.getElementById('top-gainer-price'),
@@ -73,8 +145,10 @@
     totalTrackedCoins: document.getElementById('total-tracked-coins'),
     total5mVol: document.getElementById('total-5m-vol'),
 
-    // Modal
+    // Coin Modal
     coinModal: document.getElementById('coin-modal'),
+    modalCardElement: document.getElementById('modal-card-element'),
+    modalFullscreenBtn: document.getElementById('modal-fullscreen-btn'),
     modalClose: document.getElementById('modal-close'),
     modalSymbol: document.getElementById('modal-symbol'),
     modalPrice: document.getElementById('modal-price'),
@@ -88,11 +162,212 @@
     modalSurgeScore: document.getElementById('modal-surge-score'),
     modalChartRange: document.getElementById('modal-chart-range'),
     modalCanvas: document.getElementById('modal-canvas'),
+    modalStarBtn: document.getElementById('modal-star-btn'),
     modalBinanceLink: document.getElementById('modal-binance-link'),
-    modalTvLink: document.getElementById('modal-tv-link')
+    modalTvLink: document.getElementById('modal-tv-link'),
+    tabTvChart: document.getElementById('tab-tv-chart'),
+    tabCanvasChart: document.getElementById('tab-canvas-chart'),
+    tvChartWrapper: document.getElementById('tv-chart-wrapper'),
+    canvasChartSection: document.getElementById('canvas-chart-section'),
+
+    // Modal Target Price
+    modalTargetInput: document.getElementById('modal-target-price-input'),
+    modalBtnSetTarget: document.getElementById('modal-btn-set-target'),
+    modalBtnClearTarget: document.getElementById('modal-btn-clear-target'),
+    modalTargetStatus: document.getElementById('modal-target-status'),
+    modalTargetVal: document.getElementById('modal-target-val'),
+
+    // Settings Modal
+    alertSettingsModal: document.getElementById('alert-settings-modal'),
+    modalSettingsClose: document.getElementById('modal-settings-close'),
+    btnSaveSettings: document.getElementById('btn-save-settings'),
+    scopeAll: document.getElementById('scope-all'),
+    scopeWatchlist: document.getElementById('scope-watchlist'),
+    labelScopeAll: document.getElementById('label-scope-all'),
+    labelScopeWatchlist: document.getElementById('label-scope-watchlist'),
+    settingsFavCount: document.getElementById('settings-fav-count'),
+    favListBadge: document.getElementById('fav-list-badge'),
+    favTagsBox: document.getElementById('fav-tags-box'),
+    btnClearFav: document.getElementById('btn-clear-fav'),
+    inputChg5m: document.getElementById('input-chg5m'),
+    valChg5m: document.getElementById('val-chg5m'),
+    chkUse1m: document.getElementById('chk-use-1m'),
+    inputChg1m: document.getElementById('input-chg1m'),
+    valChg1m: document.getElementById('val-chg1m'),
+    chkUseSpike: document.getElementById('chk-use-spike'),
+    inputChgspike: document.getElementById('input-chgspike'),
+    valSpike: document.getElementById('val-spike'),
+    selectMinvol: document.getElementById('select-minvol'),
+    chkSound: document.getElementById('chk-sound'),
+    chkDesktop: document.getElementById('chk-desktop'),
+    soundType: document.getElementById('sound-type'),
+    btnTestSound: document.getElementById('btn-test-sound'),
+    btnTestNotify: document.getElementById('btn-test-notify')
   };
 
-  // --- Web Audio API Chime Synthesizer ---
+  // --- Watchlist Functions ---
+  window.cyberpumpToggleStar = function (symbol, event) {
+    if (event) event.stopPropagation();
+    toggleWatchlist(symbol);
+  };
+
+  function toggleWatchlist(symbol) {
+    if (state.watchlist.has(symbol)) {
+      state.watchlist.delete(symbol);
+    } else {
+      state.watchlist.add(symbol);
+      ensureCoinTracked(symbol);
+    }
+    saveWatchlist();
+    updateWatchlistUI();
+    renderMarket();
+    if (state.activeModalSymbol === symbol) {
+      updateModalStarButton(symbol);
+    }
+  }
+
+  function saveWatchlist() {
+    try {
+      localStorage.setItem('cyberpump_watchlist', JSON.stringify([...state.watchlist]));
+    } catch (e) {}
+  }
+
+  function saveTargetPrices() {
+    try {
+      localStorage.setItem('cyberpump_target_prices', JSON.stringify(state.targetPrices));
+    } catch (e) {}
+  }
+
+  function updateWatchlistUI() {
+    const count = state.watchlist.size;
+    if (el.watchlistCountBadge) el.watchlistCountBadge.textContent = count;
+    if (el.settingsFavCount) el.settingsFavCount.textContent = count;
+    if (el.favListBadge) el.favListBadge.textContent = count;
+    if (el.quickFavCount) el.quickFavCount.textContent = count;
+    renderFavTags();
+    renderMonitoredPills();
+    updateRulesSummaryUI();
+  }
+
+  function renderFavTags() {
+    if (!el.favTagsBox) return;
+    if (state.watchlist.size === 0) {
+      el.favTagsBox.innerHTML = '<span class="empty-fav-hint">尚未加入自選幣種，可在列表或卡片點擊 ⭐ 快速加入</span>';
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    state.watchlist.forEach(sym => {
+      const span = document.createElement('span');
+      span.className = 'fav-tag-pill';
+      span.innerHTML = `
+        <span>${sym}</span>
+        <button type="button" class="fav-tag-remove" title="移除">✕</button>
+      `;
+      span.querySelector('.fav-tag-remove').addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleWatchlist(sym);
+      });
+      fragment.appendChild(span);
+    });
+
+    el.favTagsBox.innerHTML = '';
+    el.favTagsBox.appendChild(fragment);
+  }
+
+  function renderMonitoredPills() {
+    if (!el.monitoredPillsList) return;
+    if (state.watchlist.size === 0) {
+      el.monitoredPillsList.innerHTML = '<span class="pills-empty">尚未選取指定幣種，可點選上方熱門幣或輸入代碼</span>';
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    state.watchlist.forEach(sym => {
+      const span = document.createElement('span');
+      span.className = 'pills-item';
+      const coin = state.marketData[sym];
+      const gainText = coin ? `${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(1)}%` : '';
+      span.innerHTML = `
+        <span>${sym.replace('USDT', '')} <small style="font-size:0.8em;opacity:0.8;">${gainText}</small></span>
+        <button type="button" class="pills-item-remove" title="移除指定監控">✕</button>
+      `;
+      span.querySelector('.pills-item-remove').addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleWatchlist(sym);
+      });
+      span.addEventListener('click', () => {
+        if (state.marketData[sym]) openModal(state.marketData[sym]);
+      });
+      fragment.appendChild(span);
+    });
+
+    el.monitoredPillsList.innerHTML = '';
+    el.monitoredPillsList.appendChild(fragment);
+  }
+
+  function updateRulesSummaryUI() {
+    const rules = state.alertRules;
+    if (el.summaryChg5m) el.summaryChg5m.textContent = `≥ ${rules.chg5m.toFixed(1)}%`;
+    if (el.summaryChg1m) el.summaryChg1m.textContent = rules.use1m ? `≥ ${rules.chg1m.toFixed(1)}%` : '不限';
+    if (el.summarySpike) el.summarySpike.textContent = rules.useSpike ? `≥ ${rules.spike.toFixed(1)}x` : '不限';
+    if (el.summaryScope) {
+      const isCustom = rules.scope === 'watchlist';
+      el.summaryScope.textContent = isCustom ? `僅監控指定清單 (${state.watchlist.size}檔)` : '全市場掃描 (150+)';
+      el.summaryScope.className = isCustom ? 'rule-value highlight-cyan' : 'rule-value highlight-green';
+    }
+    if (el.summarySound) {
+      let soundName = '防空警笛';
+      if (rules.soundType === 'cyber') soundName = '科技雙頻';
+      else if (rules.soundType === 'radar') soundName = '急促蜂鳴';
+      else if (rules.soundType === 'ding') soundName = '清脆和弦';
+      el.summarySound.textContent = state.soundEnabled ? `🔊 ${soundName}` : '🔇 已靜音';
+      el.summarySound.className = state.soundEnabled ? 'rule-value highlight-green' : 'rule-value';
+    }
+
+    if (el.btnScopeAll && el.btnScopeWatchlist) {
+      if (rules.scope === 'watchlist') {
+        el.btnScopeWatchlist.classList.add('active');
+        el.btnScopeAll.classList.remove('active');
+      } else {
+        el.btnScopeAll.classList.add('active');
+        el.btnScopeWatchlist.classList.remove('active');
+      }
+    }
+  }
+
+  function updateModalTargetPriceUI(symbol) {
+    if (!el.modalTargetInput) return;
+    const target = state.targetPrices[symbol];
+    if (target) {
+      el.modalTargetInput.value = target;
+      if (el.modalTargetStatus) {
+        el.modalTargetStatus.style.display = 'block';
+        el.modalTargetVal.textContent = `$${formatPrice(target)}`;
+      }
+      if (el.modalBtnClearTarget) el.modalBtnClearTarget.style.display = 'inline-block';
+      if (el.modalBtnSetTarget) el.modalBtnSetTarget.textContent = '更新目標價';
+    } else {
+      el.modalTargetInput.value = '';
+      if (el.modalTargetStatus) el.modalTargetStatus.style.display = 'none';
+      if (el.modalBtnClearTarget) el.modalBtnClearTarget.style.display = 'none';
+      if (el.modalBtnSetTarget) el.modalBtnSetTarget.textContent = '儲存警報價';
+    }
+  }
+
+  function updateModalStarButton(symbol) {
+    if (!el.modalStarBtn) return;
+    const isFav = state.watchlist.has(symbol);
+    if (isFav) {
+      el.modalStarBtn.className = 'action-btn btn-star-action active';
+      el.modalStarBtn.innerHTML = '<span>🔔 已在指定監控中 (點擊取消)</span>';
+    } else {
+      el.modalStarBtn.className = 'action-btn btn-star-action';
+      el.modalStarBtn.innerHTML = '<span>➕ 加入指定監控</span>';
+    }
+  }
+
+  // --- Web Audio API Chime & Siren Synthesizer ---
   function initAudio() {
     if (!state.audioCtx) {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -103,31 +378,301 @@
     }
   }
 
-  function playPumpChime() {
-    if (!state.soundEnabled) return;
+  function playAlertSound(type = state.alertRules.soundType) {
+    if (!state.soundEnabled && !state.alertRules.sound) return;
     try {
       initAudio();
       if (!state.audioCtx) return;
 
-      const now = state.audioCtx.currentTime;
-      const osc = state.audioCtx.createOscillator();
-      const gain = state.audioCtx.createGain();
+      const ctx = state.audioCtx;
+      const now = ctx.currentTime;
 
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, now);
-      osc.frequency.exponentialRampToValueAtTime(1320, now + 0.12);
-
-      gain.gain.setValueAtTime(0.25, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
-
-      osc.connect(gain);
-      gain.connect(state.audioCtx.destination);
-
-      osc.start(now);
-      osc.stop(now + 0.35);
+      if (type === 'siren') {
+        // High-urgency Air Raid Siren sweeping oscillation
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(650, now);
+        osc.frequency.linearRampToValueAtTime(1300, now + 0.35);
+        osc.frequency.linearRampToValueAtTime(650, now + 0.7);
+        osc.frequency.linearRampToValueAtTime(1300, now + 1.05);
+        osc.frequency.linearRampToValueAtTime(650, now + 1.4);
+        gain.gain.setValueAtTime(0.35, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.48);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 1.5);
+      } else if (type === 'radar') {
+        // Rapid 3 high-pitch beeps
+        for (let i = 0; i < 3; i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(1400, now + i * 0.09);
+          gain.gain.setValueAtTime(0.3, now + i * 0.09);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.09 + 0.06);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + i * 0.09);
+          osc.stop(now + i * 0.09 + 0.07);
+        }
+      } else if (type === 'ding') {
+        // Crystal chord triad (C6, E6, G6)
+        [1046.5, 1318.5, 1567.98].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + i * 0.04);
+          gain.gain.setValueAtTime(0.2, now + i * 0.04);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + i * 0.04);
+          osc.stop(now + 0.48);
+        });
+      } else {
+        // Default Cyber Chime (880Hz -> 1320Hz)
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.exponentialRampToValueAtTime(1320, now + 0.12);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.35);
+      }
     } catch (e) {
       console.warn('Audio playback error:', e);
     }
+  }
+
+  // --- Title Flashing Functions ---
+  function startTitleFlashing(text) {
+    stopTitleFlashing();
+    let toggle = false;
+    state.titleFlashingTimer = setInterval(() => {
+      document.title = toggle ? text : '🚨🚨 CYBERPUMP 暴漲緊急警報 🚨🚨';
+      toggle = !toggle;
+    }, 600);
+  }
+
+  function stopTitleFlashing() {
+    if (state.titleFlashingTimer) {
+      clearInterval(state.titleFlashingTimer);
+      state.titleFlashingTimer = null;
+    }
+    document.title = 'CYBERPUMP 5M // 虛擬幣5分鐘暴漲即時分析系統';
+  }
+
+  // --- Browser Desktop Push Notification ---
+  function sendDesktopNotification(alert) {
+    if (!state.alertRules.desktop) return;
+    if (!("Notification" in window)) return;
+
+    if (Notification.permission === "granted") {
+      new Notification(`🚨 [PUMP] ${alert.symbol} 飆升 +${alert.price_chg_5m ? alert.price_chg_5m.toFixed(2) : '0'}%!`, {
+        body: `現價: $${formatPrice(alert.price)} | 5M量: $${formatNumber(alert.vol_5m)} (${alert.vol_spike ? alert.vol_spike.toFixed(1) : '1.0'}x 放量)`,
+        tag: alert.symbol
+      });
+    }
+  }
+
+  // --- Alert Trigger Logic with Custom Rules ---
+  function checkCustomAlert(coin, now) {
+    const rules = state.alertRules;
+
+    // Check 0: Individual coin target price alert (目標價突破)
+    if (state.targetPrices[coin.symbol]) {
+      const target = state.targetPrices[coin.symbol];
+      if (coin.last_price >= target) {
+        delete state.targetPrices[coin.symbol];
+        saveTargetPrices();
+        const priceAlert = {
+          id: `price_${coin.symbol}_${Math.floor(now)}`,
+          timestamp: new Date().toLocaleTimeString('zh-TW', { hour12: false }),
+          symbol: coin.symbol,
+          base_asset: coin.base_asset,
+          price: coin.last_price,
+          price_chg_5m: coin.price_chg_5m,
+          price_chg_1m: coin.price_chg_1m,
+          vol_5m: coin.vol_5m,
+          vol_spike: coin.vol_spike,
+          type: 'PRICE_TARGET'
+        };
+        handleAlert(priceAlert);
+        if (state.activeModalSymbol === coin.symbol) {
+          updateModalTargetPriceUI(coin.symbol);
+        }
+        return;
+      }
+    }
+
+    // Scope check: If set to watchlist only, ignore non-watchlist coins
+    if (rules.scope === 'watchlist' && !state.watchlist.has(coin.symbol)) {
+      return;
+    }
+
+    // Condition 1: 5m gain
+    if (coin.price_chg_5m < rules.chg5m) return;
+
+    // Condition 2: 1m velocity (if enabled)
+    if (rules.use1m && coin.price_chg_1m < rules.chg1m) return;
+
+    // Condition 3: Volume spike multiple (if enabled)
+    if (rules.useSpike && coin.vol_spike < rules.spike) return;
+
+    // Condition 4: Minimum 5m volume
+    if (coin.vol_5m < rules.minVol) return;
+
+    // Condition 5: Cooldown
+    const lastAlert = state.alertCooldown[coin.symbol] || 0;
+    if (now - lastAlert > rules.cooldown) {
+      state.alertCooldown[coin.symbol] = now;
+      const alert = {
+        id: `${coin.symbol}_${Math.floor(now)}`,
+        timestamp: new Date().toLocaleTimeString('zh-TW', { hour12: false }),
+        symbol: coin.symbol,
+        base_asset: coin.base_asset,
+        price: coin.last_price,
+        price_chg_5m: coin.price_chg_5m,
+        price_chg_1m: coin.price_chg_1m,
+        vol_5m: coin.vol_5m,
+        vol_spike: coin.vol_spike,
+        type: 'PUMP'
+      };
+      handleAlert(alert);
+    }
+  }
+
+  function handleAlert(alert) {
+    if (!alert) return;
+    state.alertsList.unshift(alert);
+    if (state.alertsList.length > 50) state.alertsList.pop();
+
+    triggerEmergencyAlarm(alert);
+    renderAlerts();
+  }
+
+  function triggerEmergencyAlarm(alert) {
+    playAlertSound(state.alertRules.soundType);
+    sendDesktopNotification(alert);
+
+    // Emergency Top Banner
+    if (el.alarmBanner && el.alarmBannerText) {
+      state.activeAlarmCoin = alert.symbol;
+      const gainStr = alert.price_chg_5m !== undefined 
+        ? `${alert.price_chg_5m >= 0 ? '+' : ''}${alert.price_chg_5m.toFixed(2)}%` 
+        : '';
+      const spikeStr = alert.vol_spike ? `爆量 ${alert.vol_spike.toFixed(1)}x` : '';
+      const priceStr = alert.price ? `現價: $${formatPrice(alert.price)}` : '';
+      let typeLabel = '🚀 5分鐘暴漲';
+      if (alert.type === 'PRICE_TARGET') typeLabel = '🎯 目標價突破';
+      else if (alert.type === 'MILESTONE') typeLabel = '🔥 二次暴拉衝刺';
+
+      el.alarmBannerText.textContent = `${typeLabel}！【${alert.symbol}】 ${gainStr} ${spikeStr} (${priceStr})`;
+      el.alarmBanner.style.display = 'block';
+
+      if (el.alarmBtnUnmute) {
+        if (!state.audioCtx || state.audioCtx.state === 'suspended') {
+          el.alarmBtnUnmute.style.display = 'inline-block';
+        } else {
+          el.alarmBtnUnmute.style.display = 'none';
+        }
+      }
+    }
+
+    // Title Flashing
+    startTitleFlashing(`🚨【暴漲警報】${alert.symbol} 飆升!`);
+  }
+
+  // --- Dynamic Single Coin Loader ---
+  async function ensureCoinTracked(sym) {
+    if (!sym) return null;
+    let symbol = sym.toUpperCase().trim().replace(/[^A-Z0-9]/g, '');
+    if (!symbol) return null;
+    if (!symbol.endsWith('USDT')) symbol += 'USDT';
+
+    if (state.marketData[symbol] && state.historyBuffers[symbol]) {
+      return state.marketData[symbol];
+    }
+
+    try {
+      const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
+      if (!res.ok) return null;
+      const t = await res.json();
+      const lastPrice = parseFloat(t.lastPrice || 0);
+      const quoteVol = parseFloat(t.quoteVolume || 0);
+      const pct24h = parseFloat(t.priceChangePercent || 0);
+      const now = Date.now() / 1000;
+
+      let pct5m = 0.0;
+      let vol5m = quoteVol / 288.0;
+      try {
+        const res5 = await fetch(`https://api.binance.com/api/v3/ticker?symbol=${symbol}&windowSize=5m`);
+        if (res5.ok) {
+          const d5 = await res5.json();
+          pct5m = parseFloat(d5.priceChangePercent || 0);
+          vol5m = parseFloat(d5.quoteVolume || vol5m);
+        }
+      } catch (e) {}
+
+      const avg5mVol = quoteVol / 288.0;
+      const volSpike = vol5m / Math.max(avg5mVol, 1.0);
+
+      const coin = {
+        symbol: symbol,
+        base_asset: symbol.replace('USDT', ''),
+        last_price: lastPrice,
+        high_5m: lastPrice,
+        low_5m: lastPrice,
+        price_chg_5m: pct5m,
+        price_chg_1m: 0.0,
+        price_chg_15m: pct5m,
+        price_chg_24h: pct24h,
+        vol_5m: vol5m,
+        vol_24h: quoteVol,
+        vol_spike: parseFloat(volSpike.toFixed(2)),
+        surge_score: parseFloat((pct5m * 0.7 + Math.min(volSpike, 10) * 0.3).toFixed(2)),
+        sparkline: [lastPrice, lastPrice],
+        updated_at: now
+      };
+
+      state.marketData[symbol] = coin;
+      state.historyBuffers[symbol] = [
+        { ts: now - 300, price: lastPrice, quote_vol: Math.max(0, quoteVol - vol5m) },
+        { ts: now, price: lastPrice, quote_vol: quoteVol }
+      ];
+
+      scheduleRender();
+      return coin;
+    } catch (err) {
+      console.warn(`Could not load ticker for ${symbol}:`, err);
+      return null;
+    }
+  }
+
+  // --- Render Throttler ---
+  let renderScheduled = false;
+  let lastRenderTime = 0;
+  function scheduleRender() {
+    const now = performance.now();
+    if (renderScheduled) return;
+
+    const timeSinceLast = now - lastRenderTime;
+    const delay = Math.max(0, 300 - timeSinceLast);
+
+    renderScheduled = true;
+    setTimeout(() => {
+      requestAnimationFrame(() => {
+        renderScheduled = false;
+        lastRenderTime = performance.now();
+        computeAndRenderClientSide();
+      });
+    }, delay);
   }
 
   // --- Feed Mode Determination ---
@@ -135,10 +680,8 @@
     const isLocalhost = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
 
     if (isLocalhost && window.location.port === '8000') {
-      // Connect to local Python FastAPI WebSocket
       connectLocalWebSocket();
     } else {
-      // Running on GitHub Pages or static host: Connect DIRECTLY to Binance!
       state.isDirectMode = true;
       connectDirectBinance();
     }
@@ -150,6 +693,17 @@
     const wsUrl = `${protocol}//${window.location.host}/ws`;
 
     updateStatusUI(false, '正在連線至本地即時流...');
+
+    if (state.ws) {
+      try {
+        state.ws.onopen = null;
+        state.ws.onmessage = null;
+        state.ws.onclose = null;
+        state.ws.onerror = null;
+        state.ws.close();
+      } catch (e) {}
+      state.ws = null;
+    }
 
     state.ws = new WebSocket(wsUrl);
 
@@ -167,23 +721,26 @@
         if (msg.type === 'TICK') {
           if (msg.overview) updateOverviewUI(msg.overview);
           if (msg.top_5m && Array.isArray(msg.top_5m)) {
+            const now = Date.now() / 1000;
             msg.top_5m.forEach(coin => {
               state.marketData[coin.symbol] = coin;
-              // store sparkline
               if (coin.sparkline) {
                 state.historyBuffers[coin.symbol] = coin.sparkline.map((p, i) => ({
                   ts: Date.now() - (coin.sparkline.length - i) * 20000,
                   price: p
                 }));
               }
+              checkCustomAlert(coin, now);
             });
           }
           if (state.activeModalSymbol && state.marketData[state.activeModalSymbol]) {
             updateModalDynamic(state.marketData[state.activeModalSymbol]);
           }
-          renderMarket();
+          scheduleRender();
         } else if (msg.type === 'ALERT') {
-          handleAlert(msg.data);
+          if (state.alertRules.scope === 'all' || state.watchlist.has(msg.data.symbol)) {
+            handleAlert(msg.data);
+          }
         }
       } catch (err) {
         console.error('Error handling WS message:', err);
@@ -210,8 +767,18 @@
     updateStatusUI(false, '正在直連幣安官方撮合數據...');
     el.wsPingBadge.textContent = 'REST INIT';
 
+    // Clean teardown of existing WS
+    if (state.ws) {
+      try {
+        state.ws.onclose = null;
+        state.ws.onerror = null;
+        state.ws.onmessage = null;
+        state.ws.close();
+      } catch (e) {}
+      state.ws = null;
+    }
+
     try {
-      // 1. Fetch 24hr tickers to sort liquid pairs
       const res24h = await fetch('https://api.binance.com/api/v3/ticker/24hr');
       const tickers24h = await res24h.json();
 
@@ -226,15 +793,48 @@
       const topSymbols = topPairs.map(t => t.symbol);
       const vol24hMap = {};
       const chg24hMap = {};
+      const now = Date.now() / 1000;
+
+      // Immediate baseline initialization: never leaves screen blank!
       topPairs.forEach(t => {
         vol24hMap[t.symbol] = parseFloat(t.quoteVolume);
         chg24hMap[t.symbol] = parseFloat(t.priceChangePercent);
+        const s = t.symbol;
+        if (!state.marketData[s]) {
+          const lastP = parseFloat(t.lastPrice || 0);
+          const qVol = parseFloat(t.quoteVolume || 0);
+          state.marketData[s] = {
+            symbol: s,
+            base_asset: s.replace('USDT', ''),
+            last_price: lastP,
+            high_5m: lastP,
+            low_5m: lastP,
+            price_chg_5m: 0.0,
+            price_chg_1m: 0.0,
+            price_chg_15m: 0.0,
+            price_chg_24h: chg24hMap[s] || 0.0,
+            vol_5m: qVol / 288.0,
+            vol_24h: qVol,
+            vol_spike: 1.0,
+            surge_score: 0.0,
+            sparkline: [lastP, lastP],
+            updated_at: now
+          };
+          state.historyBuffers[s] = [
+            { ts: now - 300, price: lastP, quote_vol: Math.max(0, qVol - qVol / 288.0) },
+            { ts: now, price: lastP, quote_vol: qVol }
+          ];
+        }
       });
 
-      // 2. Fetch rolling 5m seed snapshot in batches of 75
-      const now = Date.now() / 1000;
-      for (let i = 0; i < Math.min(topSymbols.length, 150); i += 75) {
-        const batch = topSymbols.slice(i, i + 75);
+      // Also ensure all watchlist coins are loaded
+      state.watchlist.forEach(sym => {
+        ensureCoinTracked(sym);
+      });
+
+      // Try 5m rolling window for top 100 pairs
+      for (let i = 0; i < Math.min(topSymbols.length, 100); i += 50) {
+        const batch = topSymbols.slice(i, i + 50);
         const param = encodeURIComponent(JSON.stringify(batch));
         const url = `https://api.binance.com/api/v3/ticker?symbols=${param}&windowSize=5m`;
         try {
@@ -251,7 +851,6 @@
               const vol_spike = vol_5m / Math.max(avg_5m_vol, 1.0);
               const pct_5m = parseFloat(item.priceChangePercent);
 
-              // Initialize buffer with 5m ago checkpoint and current checkpoint
               state.historyBuffers[s] = [
                 { ts: now - 300, price: open_p, quote_vol: Math.max(0, qvol_24h - vol_5m) },
                 { ts: now, price: last_p, quote_vol: qvol_24h }
@@ -283,7 +882,17 @@
 
       computeAndRenderClientSide();
 
-      // 3. Connect to Binance official WebSocket stream
+      if (state.ws) {
+        try {
+          state.ws.onopen = null;
+          state.ws.onmessage = null;
+          state.ws.onclose = null;
+          state.ws.onerror = null;
+          state.ws.close();
+        } catch (e) {}
+        state.ws = null;
+      }
+
       const binanceWsUrl = 'wss://stream.binance.com:9443/ws/!miniTicker@arr';
       state.ws = new WebSocket(binanceWsUrl);
 
@@ -331,7 +940,34 @@
 
     tickers.forEach(t => {
       const s = t.s;
-      if (!s || !state.marketData[s]) return;
+      if (!s) return;
+
+      // If user is monitoring this coin but it wasn't in top 150, register it dynamically
+      if (!state.marketData[s]) {
+        if (state.watchlist.has(s)) {
+          const lastP = parseFloat(t.c);
+          const qVol = parseFloat(t.q);
+          state.marketData[s] = {
+            symbol: s,
+            base_asset: s.replace('USDT', ''),
+            last_price: lastP,
+            high_5m: lastP,
+            low_5m: lastP,
+            price_chg_5m: 0.0,
+            price_chg_1m: 0.0,
+            price_chg_15m: 0.0,
+            price_chg_24h: 0.0,
+            vol_5m: 0.0,
+            vol_24h: qVol,
+            vol_spike: 1.0,
+            surge_score: 0.0,
+            sparkline: [lastP],
+            updated_at: now
+          };
+        } else {
+          return;
+        }
+      }
 
       const lastPrice = parseFloat(t.c);
       const quoteVol24h = parseFloat(t.q);
@@ -343,9 +979,8 @@
       }
 
       buf.push({ ts: now, price: lastPrice, quote_vol: quoteVol24h });
-      if (buf.length > 500) buf.shift();
+      if (buf.length > 350) buf.splice(0, buf.length - 350);
 
-      // Calculate 1m, 5m, 15m changes from buffer
       const p1m = getBufferCheckpoint(buf, now - 60);
       const p5m = getBufferCheckpoint(buf, now - 300);
       const p15m = getBufferCheckpoint(buf, now - 900);
@@ -359,12 +994,10 @@
       const volSpike = vol5m / Math.max(avg5mVol, 1.0);
       const surgeScore = parseFloat((chg5m * 0.7 + Math.min(volSpike, 10.0) * 0.3).toFixed(2));
 
-      // 5m High and Low
       const recent = buf.filter(b => b.ts >= now - 300);
       const high5m = recent.length ? Math.max(...recent.map(r => r.price)) : lastPrice;
       const low5m = recent.length ? Math.min(...recent.map(r => r.price)) : lastPrice;
 
-      // Sample sparkline
       const sparkline = sampleSparkline(buf, 12);
 
       const coin = state.marketData[s];
@@ -381,15 +1014,15 @@
       coin.sparkline = sparkline;
       coin.updated_at = now;
 
-      // Check pump alert
-      checkClientAlert(coin, now);
+      // Check pump alert with custom user conditions and milestone support
+      checkCustomAlert(coin, now);
     });
 
     if (state.activeModalSymbol && state.marketData[state.activeModalSymbol]) {
       updateModalDynamic(state.marketData[state.activeModalSymbol]);
     }
 
-    computeAndRenderClientSide();
+    scheduleRender();
   }
 
   function getBufferCheckpoint(buf, targetTs) {
@@ -414,27 +1047,6 @@
     return res;
   }
 
-  function checkClientAlert(coin, now) {
-    if (coin.price_chg_5m >= state.alertThreshold && coin.vol_5m >= state.minVolume && coin.vol_spike >= 1.2) {
-      const lastAlert = state.alertCooldown[coin.symbol] || 0;
-      if (now - lastAlert > 150) {
-        state.alertCooldown[coin.symbol] = now;
-        const alert = {
-          id: `${coin.symbol}_${Math.floor(now)}`,
-          timestamp: new Date().toLocaleTimeString('zh-TW', { hour12: false }),
-          symbol: coin.symbol,
-          base_asset: coin.base_asset,
-          price: coin.last_price,
-          price_chg_5m: coin.price_chg_5m,
-          vol_5m: coin.vol_5m,
-          vol_spike: coin.vol_spike,
-          type: 'PUMP'
-        };
-        handleAlert(alert);
-      }
-    }
-  }
-
   function computeAndRenderClientSide() {
     const coins = Object.values(state.marketData);
     if (!coins.length) return;
@@ -444,7 +1056,7 @@
     const bullRatio = (gaining / Math.max(coins.length, 1)) * 100;
     const total5mVol = coins.reduce((acc, c) => acc + (c.vol_5m || 0), 0);
 
-    const sortedByGain = [...coins].sort((a, b) => b.price_chg_5m - a.price_chg_5m);
+    const sortedByGain = [...coins].filter(c => c.price_chg_5m > 0).sort((a, b) => b.price_chg_5m - a.price_chg_5m);
     const sortedBySpike = [...coins].filter(c => c.price_chg_5m > 0).sort((a, b) => b.vol_spike - a.vol_spike);
 
     const overview = {
@@ -472,15 +1084,6 @@
       el.wsStatusBadge.querySelector('.status-dot').style.backgroundColor = 'var(--neon-red)';
       el.wsPingBadge.textContent = '--';
     }
-  }
-
-  function handleAlert(alert) {
-    if (!alert) return;
-    state.alertsList.unshift(alert);
-    if (state.alertsList.length > 50) state.alertsList.pop();
-
-    playPumpChime();
-    renderAlerts();
   }
 
   // --- Overview UI Updates ---
@@ -525,25 +1128,31 @@
     el.total5mVol.textContent = `$${(ov.total_5m_volume_usdt / 1e6).toFixed(2)} M`;
   }
 
-  // --- Rendering Market List / Table ---
+  // --- Rendering Market List / Table with In-Place Keyed Reconciliation ---
   function renderMarket() {
     let coins = Object.values(state.marketData);
 
+    // Search filter
     if (state.searchQuery) {
       const q = state.searchQuery.toUpperCase();
       coins = coins.filter(c => c.symbol.includes(q) || c.base_asset.includes(q));
     }
 
+    // Min volume filter
     if (state.minVolume > 0) {
       coins = coins.filter(c => c.vol_5m >= state.minVolume);
     }
 
-    // 嚴格只保留上漲幣種（5分鐘漲幅 > 0）
-    coins = coins.filter(c => c.price_chg_5m > 0);
-
-    coins.sort((a, b) => {
-      return (b[state.currentSort] || 0) - (a[state.currentSort] || 0);
-    });
+    // Watchlist mode vs Discovery mode
+    if (state.currentSort === 'watchlist') {
+      // In Watchlist mode, show ALL coins the user chose to monitor!
+      coins = coins.filter(c => state.watchlist.has(c.symbol));
+      coins.sort((a, b) => (b.price_chg_5m || 0) - (a.price_chg_5m || 0));
+    } else {
+      // In Discovery mode, filter strictly positive gainers only
+      coins = coins.filter(c => c.price_chg_5m > 0);
+      coins.sort((a, b) => (b[state.currentSort] || 0) - (a[state.currentSort] || 0));
+    }
 
     if (state.viewMode === 'table') {
       renderTable(coins.slice(0, 50));
@@ -554,21 +1163,42 @@
 
   function renderTable(coins) {
     if (!coins.length) {
+      const msg = state.currentSort === 'watchlist' 
+        ? '自選監控清單目前無幣種，請在上方輸入代碼或點擊熱門幣加入'
+        : '無符合目前過濾條件的幣種';
       el.cryptoTbody.innerHTML = `
         <tr>
-          <td colspan="10" class="loading-state">
-            <span>無符合目前過濾條件的幣種</span>
+          <td colspan="11" class="loading-state">
+            <span>${msg}</span>
           </td>
         </tr>`;
       return;
     }
 
-    const fragment = document.createDocumentFragment();
+    // If currently showing a loading-state tr, clear it first
+    if (el.cryptoTbody.querySelector('.loading-state')) {
+      el.cryptoTbody.innerHTML = '';
+    }
+
+    // Map existing rows by symbol
+    const existingRows = new Map();
+    const currentChildren = Array.from(el.cryptoTbody.children);
+    currentChildren.forEach(child => {
+      if (child.dataset && child.dataset.symbol) {
+        existingRows.set(child.dataset.symbol, child);
+      }
+    });
+
+    const targetSymbols = new Set(coins.map(c => c.symbol));
+
+    // Remove rows not in coins
+    currentChildren.forEach(child => {
+      if (!child.dataset || !child.dataset.symbol || !targetSymbols.has(child.dataset.symbol)) {
+        child.remove();
+      }
+    });
 
     coins.forEach((coin, idx) => {
-      const tr = document.createElement('tr');
-      tr.id = `row-${coin.symbol}`;
-
       const prevPrice = state.previousPrices[coin.symbol];
       let flashClass = '';
       if (prevPrice !== undefined) {
@@ -579,70 +1209,135 @@
 
       const rankNum = idx + 1;
       const rankClass = rankNum === 1 ? 'rank-top-1' : rankNum === 2 ? 'rank-top-2' : rankNum === 3 ? 'rank-top-3' : '';
-
       const chg5mClass = coin.price_chg_5m >= 0 ? 'positive' : 'negative';
       const chg1mClass = coin.price_chg_1m >= 0 ? 'positive' : 'negative';
       const chg15mClass = coin.price_chg_15m >= 0 ? 'positive' : 'negative';
-
       const isHotSpike = coin.vol_spike >= 3.0;
       const spikeBadgeClass = isHotSpike ? 'spike-hot' : 'spike-normal';
-
       const sparkSvg = generateSparklineSvg(coin.sparkline, coin.price_chg_5m >= 0);
+      const isFav = state.watchlist.has(coin.symbol);
 
-      tr.innerHTML = `
-        <td class="col-rank ${rankClass}">${rankNum}</td>
-        <td class="col-symbol">
-          <div class="symbol-cell">
-            <div class="token-avatar">${coin.base_asset.slice(0, 3)}</div>
-            <div class="token-names">
-              <span class="token-symbol">${coin.base_asset}</span>
-              <span class="token-pair">/USDT</span>
-            </div>
-          </div>
-        </td>
-        <td class="col-price">
-          <span class="price-text ${flashClass}">$${formatPrice(coin.last_price)}</span>
-        </td>
-        <td class="col-chg5m">
-          <div class="gain-cell">
-            <span class="gain-badge ${chg5mClass}">${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%</span>
-            <div class="gain-mini-bar-bg">
-              <div class="gain-mini-bar-fill ${chg5mClass}" style="width: ${Math.min(Math.abs(coin.price_chg_5m) * 15, 100)}%;"></div>
-            </div>
-          </div>
-        </td>
-        <td class="col-chg1m">
-          <span class="velocity-badge ${chg1mClass}">${coin.price_chg_1m >= 0 ? '▲ +' : '▼ '}${coin.price_chg_1m.toFixed(2)}%</span>
-        </td>
-        <td class="col-chg15m">
-          <span class="velocity-badge ${chg15mClass}">${coin.price_chg_15m >= 0 ? '+' : ''}${coin.price_chg_15m.toFixed(2)}%</span>
-        </td>
-        <td class="col-vol5m font-mono">
-          $${formatNumber(coin.vol_5m)}
-        </td>
-        <td class="col-spike">
-          <span class="spike-badge ${spikeBadgeClass}">
-            ${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x
-          </span>
-        </td>
-        <td class="col-spark">
-          ${sparkSvg}
-        </td>
-        <td class="col-actions">
-          <div class="action-links">
-            <a href="https://www.binance.com/zh-TC/trade/${coin.symbol}?type=spot" target="_blank" class="btn-mini-trade" title="前往幣安交易" onclick="event.stopPropagation();">
-              交易
-            </a>
-          </div>
-        </td>
-      `;
+      let tr = existingRows.get(coin.symbol);
 
-      tr.addEventListener('click', () => openModal(coin));
-      fragment.appendChild(tr);
+      if (tr) {
+        // In-place update existing row elements: Zero DOM recreation!
+        const rankEl = tr.querySelector('.col-rank');
+        if (rankEl && rankEl.textContent !== String(rankNum)) {
+          rankEl.textContent = rankNum;
+          rankEl.className = `col-rank ${rankClass}`;
+        }
+
+        const monitorBtn = tr.querySelector('.btn-monitor');
+        if (monitorBtn) {
+          monitorBtn.className = `btn-monitor ${isFav ? 'active' : ''}`;
+          monitorBtn.innerHTML = `<span class="bell-icon">${isFav ? '🔔' : '➕'}</span><span>${isFav ? '監控中' : '監控'}</span>`;
+        }
+
+        const priceEl = tr.querySelector('.price-text');
+        if (priceEl) {
+          priceEl.textContent = `$${formatPrice(coin.last_price)}`;
+          if (flashClass) {
+            priceEl.className = `price-text ${flashClass}`;
+            setTimeout(() => { priceEl.className = 'price-text'; }, 600);
+          }
+        }
+
+        const gainBadge = tr.querySelector('.gain-badge');
+        if (gainBadge) {
+          gainBadge.textContent = `${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%`;
+          gainBadge.className = `gain-badge ${chg5mClass}`;
+        }
+
+        const fillBar = tr.querySelector('.gain-mini-bar-fill');
+        if (fillBar) {
+          fillBar.style.width = `${Math.min(Math.abs(coin.price_chg_5m) * 15, 100)}%`;
+          fillBar.className = `gain-mini-bar-fill ${chg5mClass}`;
+        }
+
+        const v1m = tr.querySelector('.col-chg1m .velocity-badge');
+        if (v1m) {
+          v1m.textContent = `${coin.price_chg_1m >= 0 ? '▲ +' : '▼ '}${coin.price_chg_1m.toFixed(2)}%`;
+          v1m.className = `velocity-badge ${chg1mClass}`;
+        }
+
+        const v15m = tr.querySelector('.col-chg15m .velocity-badge');
+        if (v15m) {
+          v15m.textContent = `${coin.price_chg_15m >= 0 ? '+' : ''}${coin.price_chg_15m.toFixed(2)}%`;
+          v15m.className = `velocity-badge ${chg15mClass}`;
+        }
+
+        const volEl = tr.querySelector('.col-vol5m');
+        if (volEl) volEl.textContent = `$${formatNumber(coin.vol_5m)}`;
+
+        const spikeEl = tr.querySelector('.col-spike .spike-badge');
+        if (spikeEl) {
+          spikeEl.textContent = `${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x`;
+          spikeEl.className = `spike-badge ${spikeBadgeClass}`;
+        }
+
+        const sparkCell = tr.querySelector('.col-spark');
+        if (sparkCell) sparkCell.innerHTML = sparkSvg;
+
+      } else {
+        // Create new TR
+        tr = document.createElement('tr');
+        tr.id = `row-${coin.symbol}`;
+        tr.dataset.symbol = coin.symbol;
+        tr.innerHTML = `
+          <td class="col-fav">
+            <button type="button" class="btn-monitor ${isFav ? 'active' : ''}" title="${isFav ? '點擊取消指定監控' : '點擊加入指定監控'}" onclick="window.cyberpumpToggleStar('${coin.symbol}', event)">
+              <span class="bell-icon">${isFav ? '🔔' : '➕'}</span>
+              <span>${isFav ? '監控中' : '監控'}</span>
+            </button>
+          </td>
+          <td class="col-rank ${rankClass}">${rankNum}</td>
+          <td class="col-symbol">
+            <div class="symbol-cell">
+              <div class="token-avatar">${coin.base_asset.slice(0, 3)}</div>
+              <div class="token-names">
+                <span class="token-symbol">${coin.base_asset}</span>
+                <span class="token-pair">/USDT</span>
+              </div>
+            </div>
+          </td>
+          <td class="col-price">
+            <span class="price-text ${flashClass}">$${formatPrice(coin.last_price)}</span>
+          </td>
+          <td class="col-chg5m">
+            <div class="gain-cell">
+              <span class="gain-badge ${chg5mClass}">${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%</span>
+              <div class="gain-mini-bar-bg">
+                <div class="gain-mini-bar-fill ${chg5mClass}" style="width: ${Math.min(Math.abs(coin.price_chg_5m) * 15, 100)}%;"></div>
+              </div>
+            </div>
+          </td>
+          <td class="col-chg1m">
+            <span class="velocity-badge ${chg1mClass}">${coin.price_chg_1m >= 0 ? '▲ +' : '▼ '}${coin.price_chg_1m.toFixed(2)}%</span>
+          </td>
+          <td class="col-chg15m">
+            <span class="velocity-badge ${chg15mClass}">${coin.price_chg_15m >= 0 ? '+' : ''}${coin.price_chg_15m.toFixed(2)}%</span>
+          </td>
+          <td class="col-vol5m font-mono">$${formatNumber(coin.vol_5m)}</td>
+          <td class="col-spike">
+            <span class="spike-badge ${spikeBadgeClass}">${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x</span>
+          </td>
+          <td class="col-spark">${sparkSvg}</td>
+          <td class="col-actions">
+            <div class="action-links">
+              <a href="https://www.binance.com/zh-TC/trade/${coin.symbol}?type=spot" target="_blank" class="btn-mini-trade" title="前往幣安交易" onclick="event.stopPropagation();">
+                交易
+              </a>
+            </div>
+          </td>
+        `;
+        tr.addEventListener('click', () => openModal(coin));
+      }
+
+      // Ensure proper DOM position without recreating nodes
+      if (el.cryptoTbody.children[idx] !== tr) {
+        el.cryptoTbody.insertBefore(tr, el.cryptoTbody.children[idx] || null);
+      }
     });
-
-    el.cryptoTbody.innerHTML = '';
-    el.cryptoTbody.appendChild(fragment);
   }
 
   function renderCards(coins) {
@@ -651,40 +1346,97 @@
       return;
     }
 
-    const fragment = document.createDocumentFragment();
+    if (el.cardsContainer.querySelector('.loading-state')) {
+      el.cardsContainer.innerHTML = '';
+    }
 
-    coins.forEach(coin => {
-      const card = document.createElement('div');
-      card.className = 'coin-card';
-      const chgClass = coin.price_chg_5m >= 0 ? 'positive' : 'negative';
-      const sparkSvg = generateSparklineSvg(coin.sparkline, coin.price_chg_5m >= 0, 240, 36);
-
-      card.innerHTML = `
-        <div class="card-top-row">
-          <span class="card-symbol">${coin.base_asset}<small style="font-size:0.7em;color:var(--text-muted)">/USDT</small></span>
-          <span class="card-gain ${chgClass}">${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%</span>
-        </div>
-        <div class="card-mid-row">
-          <span class="card-price">$${formatPrice(coin.last_price)}</span>
-          <span class="spike-badge ${coin.vol_spike >= 3 ? 'spike-hot' : 'spike-normal'}">
-            ${coin.vol_spike >= 3 ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x
-          </span>
-        </div>
-        <div class="card-sparkline-box">
-          ${sparkSvg}
-        </div>
-        <div class="card-footer">
-          <span>5M量: $${formatNumber(coin.vol_5m)}</span>
-          <span>1M: ${coin.price_chg_1m >= 0 ? '+' : ''}${coin.price_chg_1m.toFixed(2)}%</span>
-        </div>
-      `;
-
-      card.addEventListener('click', () => openModal(coin));
-      fragment.appendChild(card);
+    const existingCards = new Map();
+    const currentChildren = Array.from(el.cardsContainer.children);
+    currentChildren.forEach(child => {
+      if (child.dataset && child.dataset.symbol) {
+        existingCards.set(child.dataset.symbol, child);
+      }
     });
 
-    el.cardsContainer.innerHTML = '';
-    el.cardsContainer.appendChild(fragment);
+    const targetSymbols = new Set(coins.map(c => c.symbol));
+    currentChildren.forEach(child => {
+      if (!child.dataset || !child.dataset.symbol || !targetSymbols.has(child.dataset.symbol)) {
+        child.remove();
+      }
+    });
+
+    coins.forEach((coin, idx) => {
+      const chgClass = coin.price_chg_5m >= 0 ? 'positive' : 'negative';
+      const sparkSvg = generateSparklineSvg(coin.sparkline, coin.price_chg_5m >= 0, 240, 36);
+      const isFav = state.watchlist.has(coin.symbol);
+      const isHotSpike = coin.vol_spike >= 3.0;
+
+      let card = existingCards.get(coin.symbol);
+      if (card) {
+        const starBtn = card.querySelector('.btn-star');
+        if (starBtn) {
+          starBtn.className = `btn-star ${isFav ? 'active' : ''}`;
+          starBtn.title = isFav ? '取消自選' : '加入自選';
+        }
+        const gainEl = card.querySelector('.card-gain');
+        if (gainEl) {
+          gainEl.textContent = `${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%`;
+          gainEl.className = `card-gain ${chgClass}`;
+        }
+        const priceEl = card.querySelector('.card-price');
+        if (priceEl) priceEl.textContent = `$${formatPrice(coin.last_price)}`;
+
+        const spikeEl = card.querySelector('.spike-badge');
+        if (spikeEl) {
+          spikeEl.textContent = `${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x`;
+          spikeEl.className = `spike-badge ${isHotSpike ? 'spike-hot' : 'spike-normal'}`;
+        }
+        const sparkBox = card.querySelector('.card-sparkline-box');
+        if (sparkBox) sparkBox.innerHTML = sparkSvg;
+
+        const footer = card.querySelector('.card-footer');
+        if (footer) {
+          footer.innerHTML = `
+            <span>5M量: $${formatNumber(coin.vol_5m)}</span>
+            <span>1M: ${coin.price_chg_1m >= 0 ? '+' : ''}${coin.price_chg_1m.toFixed(2)}%</span>
+          `;
+        }
+      } else {
+        card = document.createElement('div');
+        card.className = 'coin-card';
+        card.dataset.symbol = coin.symbol;
+        card.innerHTML = `
+          <button type="button" class="btn-star ${isFav ? 'active' : ''}" style="position:absolute;top:12px;right:12px;z-index:2;" title="${isFav ? '取消自選' : '加入自選'}" onclick="window.cyberpumpToggleStar('${coin.symbol}', event)">
+            ★
+          </button>
+          <div class="card-top-row" style="padding-right:26px;">
+            <span class="card-symbol">${coin.base_asset}<small style="font-size:0.7em;color:var(--text-muted)">/USDT</small></span>
+            <span class="card-gain ${chgClass}">${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%</span>
+          </div>
+          <div class="card-mid-row">
+            <span class="card-price">$${formatPrice(coin.last_price)}</span>
+            <span class="spike-badge ${isHotSpike ? 'spike-hot' : 'spike-normal'}">
+              ${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x
+            </span>
+          </div>
+          <div class="card-sparkline-box">
+            ${sparkSvg}
+          </div>
+          <div class="card-footer">
+            <span>5M量: $${formatNumber(coin.vol_5m)}</span>
+            <span>1M: ${coin.price_chg_1m >= 0 ? '+' : ''}${coin.price_chg_1m.toFixed(2)}%</span>
+          </div>
+        `;
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('button')) return;
+          openModal(state.marketData[coin.symbol] || coin);
+        });
+      }
+
+      if (el.cardsContainer.children[idx] !== card) {
+        el.cardsContainer.insertBefore(card, el.cardsContainer.children[idx] || null);
+      }
+    });
   }
 
   function generateSparklineSvg(points, isPositive, width = 90, height = 28) {
@@ -756,35 +1508,44 @@
     const box = document.getElementById('tradingview-embed-box');
     if (!box) return;
     box.innerHTML = '';
+    const currentInterval = state.tvInterval || "5";
 
-    if (window.TradingView) {
-      new window.TradingView.widget({
-        autosize: true,
-        symbol: `BINANCE:${symbol}`,
-        interval: "1",
-        timezone: "Asia/Taipei",
-        theme: "dark",
-        style: "1",
-        locale: "zh_TW",
-        toolbar_bg: "#0e121b",
-        enable_publishing: false,
-        hide_top_toolbar: false,
-        hide_legend: false,
-        save_image: false,
-        container_id: "tradingview-embed-box",
-        studies: ["Volume@tv-basicstudies"]
-      });
-    } else {
-      box.innerHTML = '<div style="color:var(--text-muted);display:flex;align-items:center;justify-content:center;height:100%;">TradingView 即時圖表載入中...</div>';
+    function createWidget() {
+      if (window.TradingView) {
+        new window.TradingView.widget({
+          autosize: true,
+          symbol: `BINANCE:${symbol}`,
+          interval: currentInterval,
+          timezone: "Asia/Taipei",
+          theme: "dark",
+          style: "1",
+          locale: "zh_TW",
+          toolbar_bg: "#0e121b",
+          enable_publishing: false,
+          hide_top_toolbar: false,
+          hide_legend: false,
+          save_image: false,
+          container_id: "tradingview-embed-box",
+          studies: ["Volume@tv-basicstudies"]
+        });
+      } else {
+        box.innerHTML = '<div style="color:var(--text-muted);display:flex;align-items:center;justify-content:center;height:100%;">TradingView 即時圖表載入中...</div>';
+        setTimeout(() => {
+          if (state.activeModalSymbol === symbol && window.TradingView) {
+            createWidget();
+          }
+        }, 500);
+      }
     }
+    createWidget();
   }
 
   function updateModalDynamic(coin) {
     if (!coin || state.activeModalSymbol !== coin.symbol) return;
 
     el.modalPrice.textContent = `$${formatPrice(coin.last_price)}`;
-    el.modalGain5m.textContent = `${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%`;
-    el.modalGain5m.className = `modal-gain-val ${coin.price_chg_5m >= 0 ? 'highlight-green' : 'negative'}`;
+    el.modalGain5m.textContent = `+${coin.price_chg_5m.toFixed(2)}%`;
+    el.modalGain5m.className = `modal-gain-val highlight-green`;
     el.modalSpike.textContent = `${coin.vol_spike.toFixed(1)}x`;
 
     el.modalChg1m.textContent = `${coin.price_chg_1m >= 0 ? '+' : ''}${coin.price_chg_1m.toFixed(2)}%`;
@@ -809,7 +1570,18 @@
     state.activeModalSymbol = coin.symbol;
 
     el.modalSymbol.textContent = coin.symbol;
+    updateModalStarButton(coin.symbol);
+    updateModalTargetPriceUI(coin.symbol);
     updateModalDynamic(coin);
+
+    // Sync active interval button state
+    document.querySelectorAll('.btn-interval').forEach(btn => {
+      if (btn.dataset.interval === (state.tvInterval || "5")) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
 
     el.modalBinanceLink.href = `https://www.binance.com/zh-TC/trade/${coin.symbol}?type=spot`;
     el.modalTvLink.href = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol}`;
@@ -903,21 +1675,405 @@
     return n.toFixed(0);
   }
 
+  // --- Settings Modal Synchronization ---
+  function openSettingsModal() {
+    const rules = state.alertRules;
+    if (rules.scope === 'watchlist') {
+      el.scopeWatchlist.checked = true;
+      el.labelScopeWatchlist.classList.add('active');
+      el.labelScopeAll.classList.remove('active');
+    } else {
+      el.scopeAll.checked = true;
+      el.labelScopeAll.classList.add('active');
+      el.labelScopeWatchlist.classList.remove('active');
+    }
+
+    el.inputChg5m.value = rules.chg5m;
+    el.valChg5m.textContent = `≥ ${rules.chg5m.toFixed(1)}%`;
+
+    el.chkUse1m.checked = rules.use1m;
+    el.inputChg1m.value = rules.chg1m;
+    el.valChg1m.textContent = `≥ ${rules.chg1m.toFixed(1)}%`;
+
+    el.chkUseSpike.checked = rules.useSpike;
+    el.inputChgspike.value = rules.spike;
+    el.valSpike.textContent = `≥ ${rules.spike.toFixed(1)}x`;
+
+    el.selectMinvol.value = rules.minVol;
+    el.chkSound.checked = rules.sound;
+    el.chkDesktop.checked = rules.desktop;
+    el.soundType.value = rules.soundType;
+
+    updateWatchlistUI();
+    el.alertSettingsModal.style.display = 'flex';
+  }
+
+  function saveSettingsFromUI() {
+    state.alertRules.scope = el.scopeWatchlist.checked ? 'watchlist' : 'all';
+    state.alertRules.chg5m = parseFloat(el.inputChg5m.value);
+    state.alertRules.use1m = el.chkUse1m.checked;
+    state.alertRules.chg1m = parseFloat(el.inputChg1m.value);
+    state.alertRules.useSpike = el.chkUseSpike.checked;
+    state.alertRules.spike = parseFloat(el.inputChgspike.value);
+    state.alertRules.minVol = parseFloat(el.selectMinvol.value);
+    state.alertRules.sound = el.chkSound.checked;
+    state.alertRules.desktop = el.chkDesktop.checked;
+    state.alertRules.soundType = el.soundType.value;
+
+    state.soundEnabled = state.alertRules.sound;
+    el.soundIcon.textContent = state.soundEnabled ? '🔊' : '🔇';
+    el.soundLabel.textContent = `警報音效: ${state.soundEnabled ? '開' : '關'}`;
+    el.btnSoundToggle.className = `nav-btn ${state.soundEnabled ? '' : 'sound-off'}`;
+
+    if (el.radarThresholdVal) {
+      el.radarThresholdVal.textContent = `${state.alertRules.chg5m.toFixed(1)}%`;
+    }
+
+    try {
+      localStorage.setItem('cyberpump_alert_rules', JSON.stringify(state.alertRules));
+    } catch (e) {}
+
+    updateRulesSummaryUI();
+    renderMarket();
+
+    el.alertSettingsModal.style.display = 'none';
+  }
+
   function setupEventListeners() {
+    // Sound Toggle
     el.btnSoundToggle.addEventListener('click', () => {
       state.soundEnabled = !state.soundEnabled;
+      state.alertRules.sound = state.soundEnabled;
       initAudio();
       el.soundIcon.textContent = state.soundEnabled ? '🔊' : '🔇';
       el.soundLabel.textContent = `警報音效: ${state.soundEnabled ? '開' : '關'}`;
       el.btnSoundToggle.className = `nav-btn ${state.soundEnabled ? '' : 'sound-off'}`;
-      if (state.soundEnabled) playPumpChime();
+      if (state.soundEnabled) playAlertSound();
+      try {
+        localStorage.setItem('cyberpump_alert_rules', JSON.stringify(state.alertRules));
+      } catch (e) {}
     });
 
-    el.thresholdSelect.addEventListener('change', (e) => {
-      state.alertThreshold = parseFloat(e.target.value);
-      el.radarThresholdVal.textContent = `${state.alertThreshold.toFixed(1)}%`;
+    // Alert Settings Button
+    if (el.btnAlertSettings) {
+      el.btnAlertSettings.addEventListener('click', openSettingsModal);
+    }
+    if (el.modalSettingsClose) {
+      el.modalSettingsClose.addEventListener('click', () => el.alertSettingsModal.style.display = 'none');
+    }
+    if (el.btnSaveSettings) {
+      el.btnSaveSettings.addEventListener('click', saveSettingsFromUI);
+    }
+
+    // Settings Radio Switcher
+    if (el.scopeAll && el.scopeWatchlist) {
+      el.scopeAll.addEventListener('change', () => {
+        el.labelScopeAll.classList.add('active');
+        el.labelScopeWatchlist.classList.remove('active');
+      });
+      el.scopeWatchlist.addEventListener('change', () => {
+        el.labelScopeWatchlist.classList.add('active');
+        el.labelScopeAll.classList.remove('active');
+      });
+    }
+
+    // Sliders input events
+    if (el.inputChg5m) {
+      el.inputChg5m.addEventListener('input', (e) => {
+        el.valChg5m.textContent = `≥ ${parseFloat(e.target.value).toFixed(1)}%`;
+      });
+    }
+    if (el.inputChg1m) {
+      el.inputChg1m.addEventListener('input', (e) => {
+        el.valChg1m.textContent = `≥ ${parseFloat(e.target.value).toFixed(1)}%`;
+      });
+    }
+    if (el.inputChgspike) {
+      el.inputChgspike.addEventListener('input', (e) => {
+        el.valSpike.textContent = `≥ ${parseFloat(e.target.value).toFixed(1)}x`;
+      });
+    }
+
+    // Preset buttons
+    document.querySelectorAll('.preset-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const val = parseFloat(btn.dataset.val);
+        el.inputChg5m.value = val;
+        el.valChg5m.textContent = `≥ ${val.toFixed(1)}%`;
+      });
     });
 
+    // Test Sound & Notification Buttons
+    if (el.btnTestSound) {
+      el.btnTestSound.addEventListener('click', () => {
+        initAudio();
+        playAlertSound(el.soundType.value);
+      });
+    }
+    if (el.btnTestNotify) {
+      el.btnTestNotify.addEventListener('click', () => {
+        if (!("Notification" in window)) {
+          alert('您的瀏覽器不支援桌面通知');
+          return;
+        }
+        Notification.requestPermission().then(permission => {
+          if (permission === 'granted') {
+            new Notification('🔔 [測試警報] 桌面通知已啟用！', {
+              body: '當市場幣種暴漲拉盤時，系統將即時發出桌面推播！'
+            });
+            el.chkDesktop.checked = true;
+          } else {
+            alert('桌面通知權限已被拒絕，請在瀏覽器網址列旁允許通知權限');
+          }
+        });
+      });
+    }
+
+    // Clear Watchlist Button
+    if (el.btnClearFav) {
+      el.btnClearFav.addEventListener('click', () => {
+        if (confirm('確定要清空所有自選關注幣種嗎？')) {
+          state.watchlist.clear();
+          saveWatchlist();
+          updateWatchlistUI();
+          renderMarket();
+        }
+      });
+    }
+
+    // Modal Star Button
+    if (el.modalStarBtn) {
+      el.modalStarBtn.addEventListener('click', () => {
+        if (state.activeModalSymbol) {
+          toggleWatchlist(state.activeModalSymbol);
+        }
+      });
+    }
+
+    // Quick Add Target Coin to Monitor
+    function handleQuickAddCoin() {
+      if (!el.quickCoinInput) return;
+      let val = el.quickCoinInput.value.trim().toUpperCase();
+      if (!val) return;
+      if (!val.endsWith('USDT')) val += 'USDT';
+
+      state.watchlist.add(val);
+      saveWatchlist();
+      updateWatchlistUI();
+      el.quickCoinInput.value = '';
+      ensureCoinTracked(val);
+      renderMarket();
+    }
+
+    if (el.btnQuickAdd) el.btnQuickAdd.addEventListener('click', handleQuickAddCoin);
+    if (el.quickCoinInput) {
+      el.quickCoinInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleQuickAddCoin();
+      });
+    }
+
+    // One-Click Hot Recommendation Chips
+    document.querySelectorAll('.chip-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sym = btn.dataset.sym;
+        if (sym) {
+          toggleWatchlist(sym);
+          ensureCoinTracked(sym);
+        }
+      });
+    });
+
+    // Timeframe Interval Bar Selector for TradingView
+    document.querySelectorAll('.btn-interval').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.btn-interval').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.tvInterval = btn.dataset.interval;
+        if (state.activeModalSymbol) {
+          loadTradingViewWidget(state.activeModalSymbol);
+        }
+      });
+    });
+
+    // Table Row Event Delegation (Eliminates click loss and recreation overhead)
+    if (el.cryptoTbody) {
+      el.cryptoTbody.addEventListener('click', (e) => {
+        if (e.target.closest('button') || e.target.closest('a')) return;
+        const tr = e.target.closest('tr');
+        if (!tr || !tr.dataset || !tr.dataset.symbol) return;
+        const sym = tr.dataset.symbol;
+        if (state.marketData[sym]) {
+          openModal(state.marketData[sym]);
+        }
+      });
+    }
+
+    // Scope Quick Switchers in Control Bar
+    if (el.btnScopeAll) {
+      el.btnScopeAll.addEventListener('click', () => {
+        state.alertRules.scope = 'all';
+        try { localStorage.setItem('cyberpump_alert_rules', JSON.stringify(state.alertRules)); } catch (e) {}
+        updateRulesSummaryUI();
+        renderMarket();
+      });
+    }
+
+    if (el.btnScopeWatchlist) {
+      el.btnScopeWatchlist.addEventListener('click', () => {
+        state.alertRules.scope = 'watchlist';
+        try { localStorage.setItem('cyberpump_alert_rules', JSON.stringify(state.alertRules)); } catch (e) {}
+        updateRulesSummaryUI();
+        state.currentSort = 'watchlist';
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        if (el.tabWatchlistBtn) el.tabWatchlistBtn.classList.add('active');
+        renderMarket();
+      });
+    }
+
+    // Quick Settings & Test Alarm Buttons in Status Box
+    if (el.btnQuickSettings) {
+      el.btnQuickSettings.addEventListener('click', openSettingsModal);
+    }
+
+    if (el.btnQuickTest) {
+      el.btnQuickTest.addEventListener('click', () => {
+        initAudio();
+        const sampleCoin = Object.values(state.marketData)[0] || {
+          symbol: 'SOLUSDT',
+          base_asset: 'SOL',
+          last_price: 154.20,
+          price_chg_5m: 3.65,
+          vol_spike: 4.2,
+          vol_5m: 850000
+        };
+        const alertObj = {
+          id: `test_${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString('zh-TW', { hour12: false }),
+          symbol: sampleCoin.symbol,
+          base_asset: sampleCoin.base_asset,
+          price: sampleCoin.last_price,
+          price_chg_5m: sampleCoin.price_chg_5m || 3.5,
+          price_chg_1m: 0.8,
+          vol_5m: sampleCoin.vol_5m || 500000,
+          vol_spike: sampleCoin.vol_spike || 3.5,
+          type: 'PUMP'
+        };
+        handleAlert(alertObj);
+      });
+    }
+
+    // Emergency Alarm Banner Actions
+    if (el.alarmBtnUnmute) {
+      el.alarmBtnUnmute.addEventListener('click', () => {
+        initAudio();
+        if (state.audioCtx && state.audioCtx.state === 'running') {
+          el.alarmBtnUnmute.style.display = 'none';
+          playAlertSound(state.alertRules.soundType);
+        }
+      });
+    }
+
+    // Modern browser autoplay audio context unlock on any interaction
+    const unlockAudio = () => {
+      initAudio();
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+    };
+    document.addEventListener('click', unlockAudio, { once: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
+    document.addEventListener('touchstart', unlockAudio, { once: true });
+
+    if (el.alarmBtnInspect) {
+      el.alarmBtnInspect.addEventListener('click', () => {
+        if (state.activeAlarmCoin && state.marketData[state.activeAlarmCoin]) {
+          openModal(state.marketData[state.activeAlarmCoin]);
+        }
+        if (el.alarmBanner) el.alarmBanner.style.display = 'none';
+        stopTitleFlashing();
+      });
+    }
+
+    if (el.alarmBtnStop) {
+      el.alarmBtnStop.addEventListener('click', () => {
+        if (el.alarmBanner) el.alarmBanner.style.display = 'none';
+        stopTitleFlashing();
+      });
+    }
+
+    window.addEventListener('focus', () => {
+      stopTitleFlashing();
+    });
+
+    // Modal Target Price Save & Clear
+    if (el.modalBtnSetTarget) {
+      el.modalBtnSetTarget.addEventListener('click', () => {
+        if (!state.activeModalSymbol || !el.modalTargetInput) return;
+        const targetVal = parseFloat(el.modalTargetInput.value);
+        if (isNaN(targetVal) || targetVal <= 0) {
+          alert('請輸入有效的目標價格！');
+          return;
+        }
+        state.targetPrices[state.activeModalSymbol] = targetVal;
+        saveTargetPrices();
+        updateModalTargetPriceUI(state.activeModalSymbol);
+        state.watchlist.add(state.activeModalSymbol);
+        saveWatchlist();
+        updateWatchlistUI();
+        renderMarket();
+      });
+    }
+
+    if (el.modalBtnClearTarget) {
+      el.modalBtnClearTarget.addEventListener('click', () => {
+        if (!state.activeModalSymbol) return;
+        delete state.targetPrices[state.activeModalSymbol];
+        saveTargetPrices();
+        updateModalTargetPriceUI(state.activeModalSymbol);
+      });
+    }
+
+    // Settings Modal Profile Preset Chips (極速靈敏, 標準主力, 巨鯨暴拉)
+    document.querySelectorAll('.profile-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('.profile-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        const p = chip.dataset.profile;
+        if (p === 'sensitive') {
+          el.inputChg5m.value = 1.0;
+          el.valChg5m.textContent = '≥ 1.0%';
+          el.chkUse1m.checked = true;
+          el.inputChg1m.value = 0.2;
+          el.valChg1m.textContent = '≥ 0.2%';
+          el.chkUseSpike.checked = true;
+          el.inputChgspike.value = 1.5;
+          el.valSpike.textContent = '≥ 1.5x';
+          el.selectMinvol.value = '5000';
+        } else if (p === 'standard') {
+          el.inputChg5m.value = 2.0;
+          el.valChg5m.textContent = '≥ 2.0%';
+          el.chkUse1m.checked = true;
+          el.inputChg1m.value = 0.4;
+          el.valChg1m.textContent = '≥ 0.4%';
+          el.chkUseSpike.checked = true;
+          el.inputChgspike.value = 2.0;
+          el.valSpike.textContent = '≥ 2.0x';
+          el.selectMinvol.value = '10000';
+        } else if (p === 'whale') {
+          el.inputChg5m.value = 4.0;
+          el.valChg5m.textContent = '≥ 4.0%';
+          el.chkUse1m.checked = true;
+          el.inputChg1m.value = 0.8;
+          el.valChg1m.textContent = '≥ 0.8%';
+          el.chkUseSpike.checked = true;
+          el.inputChgspike.value = 3.0;
+          el.valSpike.textContent = '≥ 3.0x';
+          el.selectMinvol.value = '50000';
+        }
+      });
+    });
+
+    // View Mode Toggle
     el.viewTableBtn.addEventListener('click', () => {
       state.viewMode = 'table';
       el.viewTableBtn.classList.add('active');
@@ -936,6 +2092,7 @@
       renderMarket();
     });
 
+    // Sort Tabs
     el.sortTabs.addEventListener('click', (e) => {
       const btn = e.target.closest('.tab-btn');
       if (!btn) return;
@@ -945,11 +2102,13 @@
       renderMarket();
     });
 
+    // Min Volume Filter
     el.minVolFilter.addEventListener('change', (e) => {
       state.minVolume = parseFloat(e.target.value);
       renderMarket();
     });
 
+    // Search Input
     el.symbolSearch.addEventListener('input', (e) => {
       state.searchQuery = e.target.value.trim();
       el.clearSearch.style.display = state.searchQuery ? 'block' : 'none';
@@ -1004,7 +2163,6 @@
         fullscreenBtn.textContent = isFull ? '🗗' : '⛶';
         fullscreenBtn.title = isFull ? '還原視窗大小' : '切換放大全螢幕視窗';
         
-        // If canvas is active, adjust its width and redraw
         if (state.activeChartTab === 'canvas' && state.activeModalSymbol) {
           setTimeout(() => {
             const canvas = el.modalCanvas;
@@ -1021,6 +2179,7 @@
       });
     }
 
+    // Coin Modal Close
     el.modalClose.addEventListener('click', () => {
       el.coinModal.style.display = 'none';
       state.activeModalSymbol = null;
@@ -1034,15 +2193,25 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && el.coinModal.style.display === 'flex') {
-        el.coinModal.style.display = 'none';
-        state.activeModalSymbol = null;
+      if (e.key === 'Escape') {
+        if (el.alertSettingsModal.style.display === 'flex') {
+          el.alertSettingsModal.style.display = 'none';
+        } else if (el.coinModal.style.display === 'flex') {
+          el.coinModal.style.display = 'none';
+          state.activeModalSymbol = null;
+        }
       }
     });
   }
 
   function init() {
     setupEventListeners();
+    updateWatchlistUI();
+    if (state.watchlist && state.watchlist.size > 0) {
+      state.watchlist.forEach(sym => {
+        ensureCoinTracked(sym);
+      });
+    }
     initDataFeed();
   }
 

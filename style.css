@@ -2632,3 +2632,79 @@ body {
   font-weight: 700;
 }
 
+/* Alarm Unmute Button */
+.alarm-btn-unmute {
+  background: #ffb703;
+  color: #07090e;
+  font-weight: 800;
+  font-size: 0.8rem;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(255, 183, 3, 0.5);
+  animation: pulse-amber-glow 1s infinite alternate ease-in-out;
+}
+
+@keyframes pulse-amber-glow {
+  0% { transform: scale(1); filter: drop-shadow(0 0 4px #ffb703); }
+  100% { transform: scale(1.05); filter: drop-shadow(0 0 14px #ffb703); }
+}
+
+/* Modal Chart Tabs & Timeframe Bar */
+.modal-chart-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.chart-tab-left {
+  display: flex;
+  gap: 8px;
+}
+
+.chart-interval-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 3px 6px;
+}
+
+.interval-title {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.btn-interval {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-interval:hover {
+  background: rgba(0, 245, 160, 0.15);
+  color: var(--neon-green);
+}
+
+.btn-interval.active {
+  background: rgba(0, 245, 160, 0.25);
+  border-color: var(--neon-green);
+  color: var(--neon-green);
+  font-weight: 800;
+  box-shadow: 0 0 8px rgba(0, 245, 160, 0.3);
+}
+

@@ -30,6 +30,7 @@
         </div>
       </div>
       <div class="alarm-right">
+        <button type="button" class="alarm-btn-unmute" id="alarm-btn-unmute" style="display:none;">🔊 解除靜音</button>
         <button type="button" class="alarm-btn-inspect" id="alarm-btn-inspect">📊 立即查看實時 K 線</button>
         <button type="button" class="alarm-btn-stop" id="alarm-btn-stop" title="關閉警報">✕ 關閉</button>
       </div>
@@ -426,14 +427,25 @@
           </div>
         </div>
 
-        <!-- Chart Mode Tabs -->
+        <!-- Chart Mode Tabs & Timeframe Bar -->
         <div class="modal-chart-tabs">
-          <button class="chart-tab-btn active" id="tab-tv-chart">
-            <span>📊 TradingView 實時 K 線圖 (即時跳動)</span>
-          </button>
-          <button class="chart-tab-btn" id="tab-canvas-chart">
-            <span>⚡ 5分鐘高頻撮合分秒圖 (Tick-by-Tick)</span>
-          </button>
+          <div class="chart-tab-left">
+            <button class="chart-tab-btn active" id="tab-tv-chart">
+              <span>📊 TradingView 實時 K 線圖 (即時跳動)</span>
+            </button>
+            <button class="chart-tab-btn" id="tab-canvas-chart">
+              <span>⚡ 5分鐘高頻撮合分秒圖 (Tick-by-Tick)</span>
+            </button>
+          </div>
+          <div class="chart-interval-bar" id="tv-intervals-bar">
+            <span class="interval-title">週期:</span>
+            <button type="button" class="btn-interval" data-interval="1">1分</button>
+            <button type="button" class="btn-interval active" data-interval="5">5分</button>
+            <button type="button" class="btn-interval" data-interval="15">15分</button>
+            <button type="button" class="btn-interval" data-interval="60">1小時</button>
+            <button type="button" class="btn-interval" data-interval="240">4小時</button>
+            <button type="button" class="btn-interval" data-interval="D">日K</button>
+          </div>
         </div>
 
         <!-- TradingView Embedded Container -->

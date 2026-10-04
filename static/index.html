@@ -19,6 +19,24 @@
   <!-- Audio Chime Element Container (Web Audio API fallback) -->
   <div id="audio-container" style="display:none;"></div>
 
+  <!-- Emergency High-Urgency Alarm Banner -->
+  <div id="alarm-banner" class="alarm-banner" style="display: none;">
+    <div class="alarm-banner-inner">
+      <div class="alarm-left">
+        <span class="alarm-siren-icon pulse-alarm">🚨</span>
+        <div class="alarm-info">
+          <div class="alarm-badge">PUMP ALERT // 暴漲緊急警報</div>
+          <div class="alarm-main-text" id="alarm-banner-text">-- 正在觸發警報 --</div>
+        </div>
+      </div>
+      <div class="alarm-right">
+        <button type="button" class="alarm-btn-unmute" id="alarm-btn-unmute" style="display:none;">🔊 解除靜音</button>
+        <button type="button" class="alarm-btn-inspect" id="alarm-btn-inspect">📊 立即查看實時 K 線</button>
+        <button type="button" class="alarm-btn-stop" id="alarm-btn-stop" title="關閉警報">✕ 關閉</button>
+      </div>
+    </div>
+  </div>
+
   <!-- App Wrapper -->
   <div class="app-layout">
     
@@ -47,23 +65,17 @@
       </div>
 
       <div class="nav-right">
+        <!-- Alert Rules Settings button -->
+        <button class="nav-btn btn-settings-glow" id="btn-alert-settings" title="自訂監控幣種與警報觸發條件">
+          <span class="btn-icon">⚙️</span>
+          <span class="btn-label">警報條件設置</span>
+        </button>
+
         <!-- Audio alert toggle -->
         <button class="nav-btn" id="btn-sound-toggle" title="切換暴漲警報音效">
           <span class="btn-icon" id="sound-icon">🔊</span>
           <span class="btn-label" id="sound-label">警報音效: 開</span>
         </button>
-
-        <!-- Alert threshold selector -->
-        <div class="threshold-selector">
-          <span class="selector-label">預警門檻:</span>
-          <select id="threshold-select" class="nav-select">
-            <option value="1.0">≥ 1.0%</option>
-            <option value="1.5">≥ 1.5%</option>
-            <option value="2.0" selected>≥ 2.0% (標準)</option>
-            <option value="3.0">≥ 3.0% (強勢)</option>
-            <option value="5.0">≥ 5.0% (狂飆)</option>
-          </select>
-        </div>
 
         <!-- View mode toggle -->
         <div class="view-toggle">
@@ -172,6 +184,99 @@
       </div>
     </section>
 
+    <!-- Target Monitor & Active Alarm Rules Control Panel -->
+    <section class="monitor-control-panel">
+      <!-- Left: Active Alarm Rules Status (怎麼樣會有警報) -->
+      <div class="alarm-status-box">
+        <div class="status-box-header">
+          <span class="box-badge-live">
+            <span class="pulse-dot-red"></span>
+            緊報觸發條件
+          </span>
+          <span class="box-sub-desc">實時比對行情，符合下列複合條件即觸發警笛與桌面推播</span>
+        </div>
+        <div class="rules-summary-badges">
+          <div class="rule-badge-item" id="badge-rule-chg5m">
+            <span class="rule-name">5M 漲幅</span>
+            <span class="rule-value" id="summary-chg5m">≥ 2.0%</span>
+          </div>
+          <div class="rule-badge-item" id="badge-rule-chg1m">
+            <span class="rule-name">1M 急速</span>
+            <span class="rule-value" id="summary-chg1m">≥ 0.4%</span>
+          </div>
+          <div class="rule-badge-item" id="badge-rule-spike">
+            <span class="rule-name">主力爆量</span>
+            <span class="rule-value" id="summary-spike">≥ 2.0x</span>
+          </div>
+          <div class="rule-badge-item" id="badge-rule-scope">
+            <span class="rule-name">監控範圍</span>
+            <span class="rule-value highlight-cyan" id="summary-scope">全網掃描</span>
+          </div>
+          <div class="rule-badge-item" id="badge-rule-sound">
+            <span class="rule-name">警報音效</span>
+            <span class="rule-value highlight-green" id="summary-sound">🔊 防空警笛</span>
+          </div>
+        </div>
+        <div class="rules-quick-actions">
+          <button type="button" class="btn-rule-action" id="btn-quick-settings">
+            <span>⚙️ 調整警報門檻</span>
+          </button>
+          <button type="button" class="btn-rule-action btn-test-alarm-highlight" id="btn-quick-test">
+            <span>🚨 模擬測試緊報 (試聽)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Right: Target Coin Monitor Controller (要可以選監控哪個) -->
+      <div class="target-monitor-box">
+        <div class="target-box-header">
+          <span class="box-title">🎯 監控對象控制台</span>
+          <div class="scope-switch-group">
+            <button type="button" class="scope-btn active" id="btn-scope-all">
+              🌐 全市場掃描
+            </button>
+            <button type="button" class="scope-btn" id="btn-scope-watchlist">
+              ⭐ 僅監控我的指定清單 (<span id="quick-fav-count">0</span>)
+            </button>
+          </div>
+        </div>
+
+        <!-- Quick Coin Add Input -->
+        <div class="quick-add-row">
+          <div class="input-with-icon">
+            <span class="input-tag-icon">➕</span>
+            <input type="text" id="quick-coin-input" placeholder="輸入代幣加入監控 (例: SOL, DOGE, PEPE...)" autocomplete="off">
+          </div>
+          <button type="button" class="btn-confirm-add" id="btn-quick-add">加入監控</button>
+        </div>
+
+        <!-- Hot Coins One-Click Add Chips -->
+        <div class="hot-chips-wrapper">
+          <span class="hot-label">🔥 熱門推薦一鍵監控:</span>
+          <div class="hot-chips-scroll" id="hot-chips-container">
+            <button type="button" class="chip-btn" data-sym="BTCUSDT">+ BTC</button>
+            <button type="button" class="chip-btn" data-sym="ETHUSDT">+ ETH</button>
+            <button type="button" class="chip-btn" data-sym="SOLUSDT">+ SOL</button>
+            <button type="button" class="chip-btn" data-sym="DOGEUSDT">+ DOGE</button>
+            <button type="button" class="chip-btn" data-sym="PEPEUSDT">+ PEPE</button>
+            <button type="button" class="chip-btn" data-sym="SUIUSDT">+ SUI</button>
+            <button type="button" class="chip-btn" data-sym="SHIBUSDT">+ SHIB</button>
+            <button type="button" class="chip-btn" data-sym="XRPUSDT">+ XRP</button>
+            <button type="button" class="chip-btn" data-sym="BNBUSDT">+ BNB</button>
+            <button type="button" class="chip-btn" data-sym="AVAXUSDT">+ AVAX</button>
+          </div>
+        </div>
+
+        <!-- Active Monitored Coins Pill Bar -->
+        <div class="monitored-pills-bar" id="monitored-pills-bar">
+          <span class="pills-title">已選清單:</span>
+          <div class="pills-list" id="monitored-pills-list">
+            <span class="pills-empty">尚未選取指定幣種，可點選上方熱門幣或輸入代碼</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Controls and Filter Bar -->
     <div class="toolbar-container">
       <div class="toolbar-left">
@@ -179,6 +284,9 @@
         <div class="tab-group" id="sort-tabs">
           <button class="tab-btn active" data-sort="price_chg_5m">
             <span class="tab-fire">🚀</span> 5分鐘漲幅
+          </button>
+          <button class="tab-btn tab-watchlist" data-sort="watchlist" id="tab-watchlist-btn" title="查看自選關注清單">
+            <span>⭐</span> 自選關注 (<span id="watchlist-count-badge">0</span>)
           </button>
           <button class="tab-btn" data-sort="price_chg_1m">
             <span class="tab-fire">⚡</span> 1分鐘急速
@@ -228,6 +336,7 @@
           <table class="crypto-table" id="crypto-table">
             <thead>
               <tr>
+                <th class="col-fav" title="加入或取消指定監控目標">指定監控</th>
                 <th class="col-rank">#</th>
                 <th class="col-symbol">幣種交易對</th>
                 <th class="col-price sortable" data-sort="last_price">最新價格</th>
@@ -318,14 +427,25 @@
           </div>
         </div>
 
-        <!-- Chart Mode Tabs -->
+        <!-- Chart Mode Tabs & Timeframe Bar -->
         <div class="modal-chart-tabs">
-          <button class="chart-tab-btn active" id="tab-tv-chart">
-            <span>📊 TradingView 實時 K 線圖 (即時跳動)</span>
-          </button>
-          <button class="chart-tab-btn" id="tab-canvas-chart">
-            <span>⚡ 5分鐘高頻撮合分秒圖 (Tick-by-Tick)</span>
-          </button>
+          <div class="chart-tab-left">
+            <button class="chart-tab-btn active" id="tab-tv-chart">
+              <span>📊 TradingView 實時 K 線圖 (即時跳動)</span>
+            </button>
+            <button class="chart-tab-btn" id="tab-canvas-chart">
+              <span>⚡ 5分鐘高頻撮合分秒圖 (Tick-by-Tick)</span>
+            </button>
+          </div>
+          <div class="chart-interval-bar" id="tv-intervals-bar">
+            <span class="interval-title">週期:</span>
+            <button type="button" class="btn-interval" data-interval="1">1分</button>
+            <button type="button" class="btn-interval active" data-interval="5">5分</button>
+            <button type="button" class="btn-interval" data-interval="15">15分</button>
+            <button type="button" class="btn-interval" data-interval="60">1小時</button>
+            <button type="button" class="btn-interval" data-interval="240">4小時</button>
+            <button type="button" class="btn-interval" data-interval="D">日K</button>
+          </div>
         </div>
 
         <!-- TradingView Embedded Container -->
@@ -372,7 +492,32 @@
           </div>
         </div>
 
+        <!-- Target Price Alert Setting in Modal -->
+        <div class="modal-target-box">
+          <div class="target-box-title-row">
+            <span class="target-icon">🎯</span>
+            <div class="target-text-wrap">
+              <span class="target-title">設定此幣種目標價警報</span>
+              <span class="target-desc">當現價達到或突破此水位時立即響起緊報</span>
+            </div>
+          </div>
+          <div class="target-input-row">
+            <div class="target-input-wrap">
+              <span class="currency-tag">$</span>
+              <input type="number" id="modal-target-price-input" step="any" placeholder="目標價格 (例: 155.00)">
+            </div>
+            <button type="button" class="btn-target-save" id="modal-btn-set-target">儲存警報價</button>
+            <button type="button" class="btn-target-clear" id="modal-btn-clear-target" style="display:none;">清除</button>
+          </div>
+          <div class="target-status-row" id="modal-target-status" style="display:none;">
+            <span class="status-indicator">🔔 已設警報: 現價突破 <strong id="modal-target-val">$0.00</strong> 即報警</span>
+          </div>
+        </div>
+
         <div class="modal-actions">
+          <button type="button" class="action-btn btn-star-action" id="modal-star-btn">
+            <span>⭐ 加入自選關注</span>
+          </button>
           <a href="#" target="_blank" class="action-btn btn-binance" id="modal-binance-link">
             <span>⚡ 前往幣安現貨交易</span>
           </a>
@@ -380,6 +525,153 @@
             <span>📊 TradingView K線圖</span>
           </a>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Alert Rules Settings Modal -->
+  <div class="modal-backdrop" id="alert-settings-modal" style="display: none;">
+    <div class="modal-card modal-settings-card">
+      <div class="modal-header">
+        <div class="modal-token-info">
+          <span class="modal-token-symbol">⚙️ 警報條件與監控範圍設置</span>
+        </div>
+        <button class="modal-close-btn" id="modal-settings-close">✕</button>
+      </div>
+      <div class="modal-body settings-body">
+        
+        <!-- Section 1: 監控對象 -->
+        <div class="setting-group">
+          <label class="setting-title">🎯 警報監控範圍</label>
+          <div class="setting-options-grid">
+            <label class="setting-radio-card active" id="label-scope-all">
+              <input type="radio" name="alert-scope" value="all" checked id="scope-all">
+              <div class="radio-content">
+                <span class="radio-name">🌐 全市場雷達掃描</span>
+                <span class="radio-desc">監控幣安所有高流動性主流 USDT 交易對</span>
+              </div>
+            </label>
+            <label class="setting-radio-card" id="label-scope-watchlist">
+              <input type="radio" name="alert-scope" value="watchlist" id="scope-watchlist">
+              <div class="radio-content">
+                <span class="radio-name">⭐ 只警報自選關注幣種</span>
+                <span class="radio-desc">僅對您指定加入監控 ⭐ 的幣種觸發警報與聲響 (<span id="settings-fav-count">0</span> 檔)</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Section 2: 觸發條件 -->
+        <div class="setting-group">
+          <div class="setting-header-inline">
+            <label class="setting-title">⚡ 警報觸發複合條件 (滿足條件時警報)</label>
+            <div class="preset-profiles-group">
+              <span class="profile-label">一鍵配置:</span>
+              <button type="button" class="profile-chip" data-profile="sensitive">⚡ 極速靈敏 (≥1%)</button>
+              <button type="button" class="profile-chip active" data-profile="standard">🎯 標準主力 (≥2%)</button>
+              <button type="button" class="profile-chip" data-profile="whale">🐋 巨鯨暴拉 (≥4%)</button>
+            </div>
+          </div>
+          <div class="settings-inputs-grid">
+            
+            <div class="setting-input-item">
+              <div class="input-item-header">
+                <span class="input-item-label">5 分鐘漲幅門檻</span>
+                <span class="input-item-val" id="val-chg5m">≥ 2.0%</span>
+              </div>
+              <input type="range" id="input-chg5m" min="0.5" max="10.0" step="0.1" value="2.0" class="setting-slider">
+              <div class="slider-presets">
+                <button type="button" class="preset-btn" data-val="1.0">1.0%</button>
+                <button type="button" class="preset-btn" data-val="1.5">1.5%</button>
+                <button type="button" class="preset-btn" data-val="2.0">2.0%</button>
+                <button type="button" class="preset-btn" data-val="3.0">3.0%</button>
+                <button type="button" class="preset-btn" data-val="5.0">5.0%</button>
+              </div>
+            </div>
+
+            <div class="setting-input-item">
+              <div class="input-item-header">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="chk-use-1m" checked>
+                  <span class="input-item-label">要求 1 分鐘急速衝刺</span>
+                </label>
+                <span class="input-item-val" id="val-chg1m">≥ 0.4%</span>
+              </div>
+              <input type="range" id="input-chg1m" min="0.1" max="5.0" step="0.1" value="0.4" class="setting-slider">
+              <span class="setting-hint">避免買入已拉完盤滯漲的幣種，確保買在拉升瞬間</span>
+            </div>
+
+            <div class="setting-input-item">
+              <div class="input-item-header">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="chk-use-spike" checked>
+                  <span class="input-item-label">要求主力爆量放量倍數</span>
+                </label>
+                <span class="input-item-val" id="val-spike">≥ 2.0x</span>
+              </div>
+              <input type="range" id="input-chgspike" min="1.0" max="10.0" step="0.5" value="2.0" class="setting-slider">
+              <span class="setting-hint">比較 5 分鐘成交額與 24 小時平均基線，過濾無量假突破</span>
+            </div>
+
+            <div class="setting-input-item">
+              <div class="input-item-header">
+                <span class="input-item-label">5 分鐘最低成交額 (USDT)</span>
+                <span class="input-item-val" id="val-minvol">$10,000</span>
+              </div>
+              <select id="select-minvol" class="nav-select" style="width: 100%;">
+                <option value="0">不設限 (含微量薄盤)</option>
+                <option value="5000">≥ $5,000</option>
+                <option value="10000" selected>≥ $10,000 (標準過濾)</option>
+                <option value="50000">≥ $50,000 (推薦中大型主力)</option>
+                <option value="100000">≥ $100,000 (高流動性巨鯨)</option>
+              </select>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Section 3: 提醒管道與測試 -->
+        <div class="setting-group">
+          <label class="setting-title">🔔 警報反饋與通知管道</label>
+          <div class="notify-options-row">
+            <label class="checkbox-box">
+              <input type="checkbox" id="chk-sound" checked>
+              <span>🔊 Web Audio 聲響提示</span>
+            </label>
+            <label class="checkbox-box">
+              <input type="checkbox" id="chk-desktop">
+              <span>🖥️ 瀏覽器桌面彈窗通知</span>
+            </label>
+            <div class="sound-select-box">
+              <span class="sub-label">音效類型:</span>
+              <select id="sound-type" class="nav-select select-compact">
+                <option value="siren" selected>🚨 防空警笛 (Air Raid Siren)</option>
+                <option value="cyber">⚡ 科技雙頻 (Cyber Chime)</option>
+                <option value="radar">📡 急促蜂鳴 (Rapid Radar)</option>
+                <option value="ding">🔔 清脆和弦 (Crystal Ding)</option>
+              </select>
+            </div>
+          </div>
+          <div class="test-btn-group">
+            <button type="button" class="btn-test-action" id="btn-test-sound">🔊 測試警報聲音</button>
+            <button type="button" class="btn-test-action" id="btn-test-notify">🔔 測試桌面通知</button>
+          </div>
+        </div>
+
+        <!-- Section 4: 自選名單快速管理 -->
+        <div class="setting-group">
+          <div class="setting-header-inline">
+            <label class="setting-title">⭐ 目前自選關注清單 (<span id="fav-list-badge">0</span> 檔)</label>
+            <button type="button" class="btn-clear-fav" id="btn-clear-fav">清空自選</button>
+          </div>
+          <div class="fav-tags-container" id="fav-tags-box">
+            <span class="empty-fav-hint">尚未加入自選幣種，可在列表或卡片點擊 ⭐ 快速加入</span>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="action-btn btn-binance" id="btn-save-settings">儲存設置並啟用</button>
       </div>
     </div>
   </div>

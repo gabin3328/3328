@@ -73,6 +73,7 @@
     audioCtx: null,
     activeModalSymbol: null,
     activeChartTab: 'tv',
+    tvInterval: '5',
     titleFlashingTimer: null,
     activeAlarmCoin: null
   };
@@ -105,6 +106,7 @@
     // Emergency Alarm Banner
     alarmBanner: document.getElementById('alarm-banner'),
     alarmBannerText: document.getElementById('alarm-banner-text'),
+    alarmBtnUnmute: document.getElementById('alarm-btn-unmute'),
     alarmBtnInspect: document.getElementById('alarm-btn-inspect'),
     alarmBtnStop: document.getElementById('alarm-btn-stop'),
 
@@ -214,6 +216,7 @@
       state.watchlist.delete(symbol);
     } else {
       state.watchlist.add(symbol);
+      ensureCoinTracked(symbol);
     }
     saveWatchlist();
     updateWatchlistUI();
@@ -566,13 +569,110 @@
         : '';
       const spikeStr = alert.vol_spike ? `爆量 ${alert.vol_spike.toFixed(1)}x` : '';
       const priceStr = alert.price ? `現價: $${formatPrice(alert.price)}` : '';
-      const typeLabel = alert.type === 'PRICE_TARGET' ? '🎯 目標價突破' : '🚀 5分鐘暴漲';
+      let typeLabel = '🚀 5分鐘暴漲';
+      if (alert.type === 'PRICE_TARGET') typeLabel = '🎯 目標價突破';
+      else if (alert.type === 'MILESTONE') typeLabel = '🔥 二次暴拉衝刺';
+
       el.alarmBannerText.textContent = `${typeLabel}！【${alert.symbol}】 ${gainStr} ${spikeStr} (${priceStr})`;
       el.alarmBanner.style.display = 'block';
+
+      if (el.alarmBtnUnmute) {
+        if (!state.audioCtx || state.audioCtx.state === 'suspended') {
+          el.alarmBtnUnmute.style.display = 'inline-block';
+        } else {
+          el.alarmBtnUnmute.style.display = 'none';
+        }
+      }
     }
 
     // Title Flashing
     startTitleFlashing(`🚨【暴漲警報】${alert.symbol} 飆升!`);
+  }
+
+  // --- Dynamic Single Coin Loader ---
+  async function ensureCoinTracked(sym) {
+    if (!sym) return null;
+    let symbol = sym.toUpperCase().trim().replace(/[^A-Z0-9]/g, '');
+    if (!symbol) return null;
+    if (!symbol.endsWith('USDT')) symbol += 'USDT';
+
+    if (state.marketData[symbol] && state.historyBuffers[symbol]) {
+      return state.marketData[symbol];
+    }
+
+    try {
+      const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
+      if (!res.ok) return null;
+      const t = await res.json();
+      const lastPrice = parseFloat(t.lastPrice || 0);
+      const quoteVol = parseFloat(t.quoteVolume || 0);
+      const pct24h = parseFloat(t.priceChangePercent || 0);
+      const now = Date.now() / 1000;
+
+      let pct5m = 0.0;
+      let vol5m = quoteVol / 288.0;
+      try {
+        const res5 = await fetch(`https://api.binance.com/api/v3/ticker?symbol=${symbol}&windowSize=5m`);
+        if (res5.ok) {
+          const d5 = await res5.json();
+          pct5m = parseFloat(d5.priceChangePercent || 0);
+          vol5m = parseFloat(d5.quoteVolume || vol5m);
+        }
+      } catch (e) {}
+
+      const avg5mVol = quoteVol / 288.0;
+      const volSpike = vol5m / Math.max(avg5mVol, 1.0);
+
+      const coin = {
+        symbol: symbol,
+        base_asset: symbol.replace('USDT', ''),
+        last_price: lastPrice,
+        high_5m: lastPrice,
+        low_5m: lastPrice,
+        price_chg_5m: pct5m,
+        price_chg_1m: 0.0,
+        price_chg_15m: pct5m,
+        price_chg_24h: pct24h,
+        vol_5m: vol5m,
+        vol_24h: quoteVol,
+        vol_spike: parseFloat(volSpike.toFixed(2)),
+        surge_score: parseFloat((pct5m * 0.7 + Math.min(volSpike, 10) * 0.3).toFixed(2)),
+        sparkline: [lastPrice, lastPrice],
+        updated_at: now
+      };
+
+      state.marketData[symbol] = coin;
+      state.historyBuffers[symbol] = [
+        { ts: now - 300, price: lastPrice, quote_vol: Math.max(0, quoteVol - vol5m) },
+        { ts: now, price: lastPrice, quote_vol: quoteVol }
+      ];
+
+      scheduleRender();
+      return coin;
+    } catch (err) {
+      console.warn(`Could not load ticker for ${symbol}:`, err);
+      return null;
+    }
+  }
+
+  // --- Render Throttler ---
+  let renderScheduled = false;
+  let lastRenderTime = 0;
+  function scheduleRender() {
+    const now = performance.now();
+    if (renderScheduled) return;
+
+    const timeSinceLast = now - lastRenderTime;
+    const delay = Math.max(0, 300 - timeSinceLast);
+
+    renderScheduled = true;
+    setTimeout(() => {
+      requestAnimationFrame(() => {
+        renderScheduled = false;
+        lastRenderTime = performance.now();
+        computeAndRenderClientSide();
+      });
+    }, delay);
   }
 
   // --- Feed Mode Determination ---
@@ -593,6 +693,17 @@
     const wsUrl = `${protocol}//${window.location.host}/ws`;
 
     updateStatusUI(false, '正在連線至本地即時流...');
+
+    if (state.ws) {
+      try {
+        state.ws.onopen = null;
+        state.ws.onmessage = null;
+        state.ws.onclose = null;
+        state.ws.onerror = null;
+        state.ws.close();
+      } catch (e) {}
+      state.ws = null;
+    }
 
     state.ws = new WebSocket(wsUrl);
 
@@ -619,16 +730,14 @@
                   price: p
                 }));
               }
-              // Check custom alerts locally too
               checkCustomAlert(coin, now);
             });
           }
           if (state.activeModalSymbol && state.marketData[state.activeModalSymbol]) {
             updateModalDynamic(state.marketData[state.activeModalSymbol]);
           }
-          renderMarket();
+          scheduleRender();
         } else if (msg.type === 'ALERT') {
-          // If in all mode, forward alert
           if (state.alertRules.scope === 'all' || state.watchlist.has(msg.data.symbol)) {
             handleAlert(msg.data);
           }
@@ -658,6 +767,17 @@
     updateStatusUI(false, '正在直連幣安官方撮合數據...');
     el.wsPingBadge.textContent = 'REST INIT';
 
+    // Clean teardown of existing WS
+    if (state.ws) {
+      try {
+        state.ws.onclose = null;
+        state.ws.onerror = null;
+        state.ws.onmessage = null;
+        state.ws.close();
+      } catch (e) {}
+      state.ws = null;
+    }
+
     try {
       const res24h = await fetch('https://api.binance.com/api/v3/ticker/24hr');
       const tickers24h = await res24h.json();
@@ -673,14 +793,48 @@
       const topSymbols = topPairs.map(t => t.symbol);
       const vol24hMap = {};
       const chg24hMap = {};
+      const now = Date.now() / 1000;
+
+      // Immediate baseline initialization: never leaves screen blank!
       topPairs.forEach(t => {
         vol24hMap[t.symbol] = parseFloat(t.quoteVolume);
         chg24hMap[t.symbol] = parseFloat(t.priceChangePercent);
+        const s = t.symbol;
+        if (!state.marketData[s]) {
+          const lastP = parseFloat(t.lastPrice || 0);
+          const qVol = parseFloat(t.quoteVolume || 0);
+          state.marketData[s] = {
+            symbol: s,
+            base_asset: s.replace('USDT', ''),
+            last_price: lastP,
+            high_5m: lastP,
+            low_5m: lastP,
+            price_chg_5m: 0.0,
+            price_chg_1m: 0.0,
+            price_chg_15m: 0.0,
+            price_chg_24h: chg24hMap[s] || 0.0,
+            vol_5m: qVol / 288.0,
+            vol_24h: qVol,
+            vol_spike: 1.0,
+            surge_score: 0.0,
+            sparkline: [lastP, lastP],
+            updated_at: now
+          };
+          state.historyBuffers[s] = [
+            { ts: now - 300, price: lastP, quote_vol: Math.max(0, qVol - qVol / 288.0) },
+            { ts: now, price: lastP, quote_vol: qVol }
+          ];
+        }
       });
 
-      const now = Date.now() / 1000;
-      for (let i = 0; i < Math.min(topSymbols.length, 150); i += 75) {
-        const batch = topSymbols.slice(i, i + 75);
+      // Also ensure all watchlist coins are loaded
+      state.watchlist.forEach(sym => {
+        ensureCoinTracked(sym);
+      });
+
+      // Try 5m rolling window for top 100 pairs
+      for (let i = 0; i < Math.min(topSymbols.length, 100); i += 50) {
+        const batch = topSymbols.slice(i, i + 50);
         const param = encodeURIComponent(JSON.stringify(batch));
         const url = `https://api.binance.com/api/v3/ticker?symbols=${param}&windowSize=5m`;
         try {
@@ -727,6 +881,17 @@
       }
 
       computeAndRenderClientSide();
+
+      if (state.ws) {
+        try {
+          state.ws.onopen = null;
+          state.ws.onmessage = null;
+          state.ws.onclose = null;
+          state.ws.onerror = null;
+          state.ws.close();
+        } catch (e) {}
+        state.ws = null;
+      }
 
       const binanceWsUrl = 'wss://stream.binance.com:9443/ws/!miniTicker@arr';
       state.ws = new WebSocket(binanceWsUrl);
@@ -775,7 +940,34 @@
 
     tickers.forEach(t => {
       const s = t.s;
-      if (!s || !state.marketData[s]) return;
+      if (!s) return;
+
+      // If user is monitoring this coin but it wasn't in top 150, register it dynamically
+      if (!state.marketData[s]) {
+        if (state.watchlist.has(s)) {
+          const lastP = parseFloat(t.c);
+          const qVol = parseFloat(t.q);
+          state.marketData[s] = {
+            symbol: s,
+            base_asset: s.replace('USDT', ''),
+            last_price: lastP,
+            high_5m: lastP,
+            low_5m: lastP,
+            price_chg_5m: 0.0,
+            price_chg_1m: 0.0,
+            price_chg_15m: 0.0,
+            price_chg_24h: 0.0,
+            vol_5m: 0.0,
+            vol_24h: qVol,
+            vol_spike: 1.0,
+            surge_score: 0.0,
+            sparkline: [lastP],
+            updated_at: now
+          };
+        } else {
+          return;
+        }
+      }
 
       const lastPrice = parseFloat(t.c);
       const quoteVol24h = parseFloat(t.q);
@@ -787,7 +979,7 @@
       }
 
       buf.push({ ts: now, price: lastPrice, quote_vol: quoteVol24h });
-      if (buf.length > 500) buf.shift();
+      if (buf.length > 350) buf.splice(0, buf.length - 350);
 
       const p1m = getBufferCheckpoint(buf, now - 60);
       const p5m = getBufferCheckpoint(buf, now - 300);
@@ -822,7 +1014,7 @@
       coin.sparkline = sparkline;
       coin.updated_at = now;
 
-      // Check pump alert with custom user conditions
+      // Check pump alert with custom user conditions and milestone support
       checkCustomAlert(coin, now);
     });
 
@@ -830,7 +1022,7 @@
       updateModalDynamic(state.marketData[state.activeModalSymbol]);
     }
 
-    computeAndRenderClientSide();
+    scheduleRender();
   }
 
   function getBufferCheckpoint(buf, targetTs) {
@@ -936,7 +1128,7 @@
     el.total5mVol.textContent = `$${(ov.total_5m_volume_usdt / 1e6).toFixed(2)} M`;
   }
 
-  // --- Rendering Market List / Table ---
+  // --- Rendering Market List / Table with In-Place Keyed Reconciliation ---
   function renderMarket() {
     let coins = Object.values(state.marketData);
 
@@ -951,17 +1143,15 @@
       coins = coins.filter(c => c.vol_5m >= state.minVolume);
     }
 
-    // Strictly positive gainers only
-    coins = coins.filter(c => c.price_chg_5m > 0);
-
-    // Watchlist mode
+    // Watchlist mode vs Discovery mode
     if (state.currentSort === 'watchlist') {
+      // In Watchlist mode, show ALL coins the user chose to monitor!
       coins = coins.filter(c => state.watchlist.has(c.symbol));
-      coins.sort((a, b) => b.price_chg_5m - a.price_chg_5m);
+      coins.sort((a, b) => (b.price_chg_5m || 0) - (a.price_chg_5m || 0));
     } else {
-      coins.sort((a, b) => {
-        return (b[state.currentSort] || 0) - (a[state.currentSort] || 0);
-      });
+      // In Discovery mode, filter strictly positive gainers only
+      coins = coins.filter(c => c.price_chg_5m > 0);
+      coins.sort((a, b) => (b[state.currentSort] || 0) - (a[state.currentSort] || 0));
     }
 
     if (state.viewMode === 'table') {
@@ -974,7 +1164,7 @@
   function renderTable(coins) {
     if (!coins.length) {
       const msg = state.currentSort === 'watchlist' 
-        ? '自選名單內目前無上漲幣種，可在幣種旁點擊 ⭐ 加入自選'
+        ? '自選監控清單目前無幣種，請在上方輸入代碼或點擊熱門幣加入'
         : '無符合目前過濾條件的幣種';
       el.cryptoTbody.innerHTML = `
         <tr>
@@ -985,12 +1175,30 @@
       return;
     }
 
-    const fragment = document.createDocumentFragment();
+    // If currently showing a loading-state tr, clear it first
+    if (el.cryptoTbody.querySelector('.loading-state')) {
+      el.cryptoTbody.innerHTML = '';
+    }
+
+    // Map existing rows by symbol
+    const existingRows = new Map();
+    const currentChildren = Array.from(el.cryptoTbody.children);
+    currentChildren.forEach(child => {
+      if (child.dataset && child.dataset.symbol) {
+        existingRows.set(child.dataset.symbol, child);
+      }
+    });
+
+    const targetSymbols = new Set(coins.map(c => c.symbol));
+
+    // Remove rows not in coins
+    currentChildren.forEach(child => {
+      if (!child.dataset || !child.dataset.symbol || !targetSymbols.has(child.dataset.symbol)) {
+        child.remove();
+      }
+    });
 
     coins.forEach((coin, idx) => {
-      const tr = document.createElement('tr');
-      tr.id = `row-${coin.symbol}`;
-
       const prevPrice = state.previousPrices[coin.symbol];
       let flashClass = '';
       if (prevPrice !== undefined) {
@@ -1001,77 +1209,135 @@
 
       const rankNum = idx + 1;
       const rankClass = rankNum === 1 ? 'rank-top-1' : rankNum === 2 ? 'rank-top-2' : rankNum === 3 ? 'rank-top-3' : '';
-
       const chg5mClass = coin.price_chg_5m >= 0 ? 'positive' : 'negative';
       const chg1mClass = coin.price_chg_1m >= 0 ? 'positive' : 'negative';
       const chg15mClass = coin.price_chg_15m >= 0 ? 'positive' : 'negative';
-
       const isHotSpike = coin.vol_spike >= 3.0;
       const spikeBadgeClass = isHotSpike ? 'spike-hot' : 'spike-normal';
-
       const sparkSvg = generateSparklineSvg(coin.sparkline, coin.price_chg_5m >= 0);
       const isFav = state.watchlist.has(coin.symbol);
 
-      tr.innerHTML = `
-        <td class="col-fav">
-          <button type="button" class="btn-monitor ${isFav ? 'active' : ''}" title="${isFav ? '點擊取消指定監控' : '點擊加入指定監控'}" onclick="window.cyberpumpToggleStar('${coin.symbol}', event)">
-            <span class="bell-icon">${isFav ? '🔔' : '➕'}</span>
-            <span>${isFav ? '監控中' : '監控'}</span>
-          </button>
-        </td>
-        <td class="col-rank ${rankClass}">${rankNum}</td>
-        <td class="col-symbol">
-          <div class="symbol-cell">
-            <div class="token-avatar">${coin.base_asset.slice(0, 3)}</div>
-            <div class="token-names">
-              <span class="token-symbol">${coin.base_asset}</span>
-              <span class="token-pair">/USDT</span>
-            </div>
-          </div>
-        </td>
-        <td class="col-price">
-          <span class="price-text ${flashClass}">$${formatPrice(coin.last_price)}</span>
-        </td>
-        <td class="col-chg5m">
-          <div class="gain-cell">
-            <span class="gain-badge ${chg5mClass}">+${coin.price_chg_5m.toFixed(2)}%</span>
-            <div class="gain-mini-bar-bg">
-              <div class="gain-mini-bar-fill ${chg5mClass}" style="width: ${Math.min(coin.price_chg_5m * 15, 100)}%;"></div>
-            </div>
-          </div>
-        </td>
-        <td class="col-chg1m">
-          <span class="velocity-badge ${chg1mClass}">${coin.price_chg_1m >= 0 ? '▲ +' : '▼ '}${coin.price_chg_1m.toFixed(2)}%</span>
-        </td>
-        <td class="col-chg15m">
-          <span class="velocity-badge ${chg15mClass}">${coin.price_chg_15m >= 0 ? '+' : ''}${coin.price_chg_15m.toFixed(2)}%</span>
-        </td>
-        <td class="col-vol5m font-mono">
-          $${formatNumber(coin.vol_5m)}
-        </td>
-        <td class="col-spike">
-          <span class="spike-badge ${spikeBadgeClass}">
-            ${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x
-          </span>
-        </td>
-        <td class="col-spark">
-          ${sparkSvg}
-        </td>
-        <td class="col-actions">
-          <div class="action-links">
-            <a href="https://www.binance.com/zh-TC/trade/${coin.symbol}?type=spot" target="_blank" class="btn-mini-trade" title="前往幣安交易" onclick="event.stopPropagation();">
-              交易
-            </a>
-          </div>
-        </td>
-      `;
+      let tr = existingRows.get(coin.symbol);
 
-      tr.addEventListener('click', () => openModal(coin));
-      fragment.appendChild(tr);
+      if (tr) {
+        // In-place update existing row elements: Zero DOM recreation!
+        const rankEl = tr.querySelector('.col-rank');
+        if (rankEl && rankEl.textContent !== String(rankNum)) {
+          rankEl.textContent = rankNum;
+          rankEl.className = `col-rank ${rankClass}`;
+        }
+
+        const monitorBtn = tr.querySelector('.btn-monitor');
+        if (monitorBtn) {
+          monitorBtn.className = `btn-monitor ${isFav ? 'active' : ''}`;
+          monitorBtn.innerHTML = `<span class="bell-icon">${isFav ? '🔔' : '➕'}</span><span>${isFav ? '監控中' : '監控'}</span>`;
+        }
+
+        const priceEl = tr.querySelector('.price-text');
+        if (priceEl) {
+          priceEl.textContent = `$${formatPrice(coin.last_price)}`;
+          if (flashClass) {
+            priceEl.className = `price-text ${flashClass}`;
+            setTimeout(() => { priceEl.className = 'price-text'; }, 600);
+          }
+        }
+
+        const gainBadge = tr.querySelector('.gain-badge');
+        if (gainBadge) {
+          gainBadge.textContent = `${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%`;
+          gainBadge.className = `gain-badge ${chg5mClass}`;
+        }
+
+        const fillBar = tr.querySelector('.gain-mini-bar-fill');
+        if (fillBar) {
+          fillBar.style.width = `${Math.min(Math.abs(coin.price_chg_5m) * 15, 100)}%`;
+          fillBar.className = `gain-mini-bar-fill ${chg5mClass}`;
+        }
+
+        const v1m = tr.querySelector('.col-chg1m .velocity-badge');
+        if (v1m) {
+          v1m.textContent = `${coin.price_chg_1m >= 0 ? '▲ +' : '▼ '}${coin.price_chg_1m.toFixed(2)}%`;
+          v1m.className = `velocity-badge ${chg1mClass}`;
+        }
+
+        const v15m = tr.querySelector('.col-chg15m .velocity-badge');
+        if (v15m) {
+          v15m.textContent = `${coin.price_chg_15m >= 0 ? '+' : ''}${coin.price_chg_15m.toFixed(2)}%`;
+          v15m.className = `velocity-badge ${chg15mClass}`;
+        }
+
+        const volEl = tr.querySelector('.col-vol5m');
+        if (volEl) volEl.textContent = `$${formatNumber(coin.vol_5m)}`;
+
+        const spikeEl = tr.querySelector('.col-spike .spike-badge');
+        if (spikeEl) {
+          spikeEl.textContent = `${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x`;
+          spikeEl.className = `spike-badge ${spikeBadgeClass}`;
+        }
+
+        const sparkCell = tr.querySelector('.col-spark');
+        if (sparkCell) sparkCell.innerHTML = sparkSvg;
+
+      } else {
+        // Create new TR
+        tr = document.createElement('tr');
+        tr.id = `row-${coin.symbol}`;
+        tr.dataset.symbol = coin.symbol;
+        tr.innerHTML = `
+          <td class="col-fav">
+            <button type="button" class="btn-monitor ${isFav ? 'active' : ''}" title="${isFav ? '點擊取消指定監控' : '點擊加入指定監控'}" onclick="window.cyberpumpToggleStar('${coin.symbol}', event)">
+              <span class="bell-icon">${isFav ? '🔔' : '➕'}</span>
+              <span>${isFav ? '監控中' : '監控'}</span>
+            </button>
+          </td>
+          <td class="col-rank ${rankClass}">${rankNum}</td>
+          <td class="col-symbol">
+            <div class="symbol-cell">
+              <div class="token-avatar">${coin.base_asset.slice(0, 3)}</div>
+              <div class="token-names">
+                <span class="token-symbol">${coin.base_asset}</span>
+                <span class="token-pair">/USDT</span>
+              </div>
+            </div>
+          </td>
+          <td class="col-price">
+            <span class="price-text ${flashClass}">$${formatPrice(coin.last_price)}</span>
+          </td>
+          <td class="col-chg5m">
+            <div class="gain-cell">
+              <span class="gain-badge ${chg5mClass}">${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%</span>
+              <div class="gain-mini-bar-bg">
+                <div class="gain-mini-bar-fill ${chg5mClass}" style="width: ${Math.min(Math.abs(coin.price_chg_5m) * 15, 100)}%;"></div>
+              </div>
+            </div>
+          </td>
+          <td class="col-chg1m">
+            <span class="velocity-badge ${chg1mClass}">${coin.price_chg_1m >= 0 ? '▲ +' : '▼ '}${coin.price_chg_1m.toFixed(2)}%</span>
+          </td>
+          <td class="col-chg15m">
+            <span class="velocity-badge ${chg15mClass}">${coin.price_chg_15m >= 0 ? '+' : ''}${coin.price_chg_15m.toFixed(2)}%</span>
+          </td>
+          <td class="col-vol5m font-mono">$${formatNumber(coin.vol_5m)}</td>
+          <td class="col-spike">
+            <span class="spike-badge ${spikeBadgeClass}">${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x</span>
+          </td>
+          <td class="col-spark">${sparkSvg}</td>
+          <td class="col-actions">
+            <div class="action-links">
+              <a href="https://www.binance.com/zh-TC/trade/${coin.symbol}?type=spot" target="_blank" class="btn-mini-trade" title="前往幣安交易" onclick="event.stopPropagation();">
+                交易
+              </a>
+            </div>
+          </td>
+        `;
+        tr.addEventListener('click', () => openModal(coin));
+      }
+
+      // Ensure proper DOM position without recreating nodes
+      if (el.cryptoTbody.children[idx] !== tr) {
+        el.cryptoTbody.insertBefore(tr, el.cryptoTbody.children[idx] || null);
+      }
     });
-
-    el.cryptoTbody.innerHTML = '';
-    el.cryptoTbody.appendChild(fragment);
   }
 
   function renderCards(coins) {
@@ -1080,44 +1346,97 @@
       return;
     }
 
-    const fragment = document.createDocumentFragment();
+    if (el.cardsContainer.querySelector('.loading-state')) {
+      el.cardsContainer.innerHTML = '';
+    }
 
-    coins.forEach(coin => {
-      const card = document.createElement('div');
-      card.className = 'coin-card';
+    const existingCards = new Map();
+    const currentChildren = Array.from(el.cardsContainer.children);
+    currentChildren.forEach(child => {
+      if (child.dataset && child.dataset.symbol) {
+        existingCards.set(child.dataset.symbol, child);
+      }
+    });
+
+    const targetSymbols = new Set(coins.map(c => c.symbol));
+    currentChildren.forEach(child => {
+      if (!child.dataset || !child.dataset.symbol || !targetSymbols.has(child.dataset.symbol)) {
+        child.remove();
+      }
+    });
+
+    coins.forEach((coin, idx) => {
       const chgClass = coin.price_chg_5m >= 0 ? 'positive' : 'negative';
       const sparkSvg = generateSparklineSvg(coin.sparkline, coin.price_chg_5m >= 0, 240, 36);
       const isFav = state.watchlist.has(coin.symbol);
+      const isHotSpike = coin.vol_spike >= 3.0;
 
-      card.innerHTML = `
-        <button type="button" class="btn-star ${isFav ? 'active' : ''}" style="position:absolute;top:12px;right:12px;z-index:2;" title="${isFav ? '取消自選' : '加入自選'}" onclick="window.cyberpumpToggleStar('${coin.symbol}', event)">
-          ★
-        </button>
-        <div class="card-top-row" style="padding-right:26px;">
-          <span class="card-symbol">${coin.base_asset}<small style="font-size:0.7em;color:var(--text-muted)">/USDT</small></span>
-          <span class="card-gain ${chgClass}">+${coin.price_chg_5m.toFixed(2)}%</span>
-        </div>
-        <div class="card-mid-row">
-          <span class="card-price">$${formatPrice(coin.last_price)}</span>
-          <span class="spike-badge ${coin.vol_spike >= 3 ? 'spike-hot' : 'spike-normal'}">
-            ${coin.vol_spike >= 3 ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x
-          </span>
-        </div>
-        <div class="card-sparkline-box">
-          ${sparkSvg}
-        </div>
-        <div class="card-footer">
-          <span>5M量: $${formatNumber(coin.vol_5m)}</span>
-          <span>1M: ${coin.price_chg_1m >= 0 ? '+' : ''}${coin.price_chg_1m.toFixed(2)}%</span>
-        </div>
-      `;
+      let card = existingCards.get(coin.symbol);
+      if (card) {
+        const starBtn = card.querySelector('.btn-star');
+        if (starBtn) {
+          starBtn.className = `btn-star ${isFav ? 'active' : ''}`;
+          starBtn.title = isFav ? '取消自選' : '加入自選';
+        }
+        const gainEl = card.querySelector('.card-gain');
+        if (gainEl) {
+          gainEl.textContent = `${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%`;
+          gainEl.className = `card-gain ${chgClass}`;
+        }
+        const priceEl = card.querySelector('.card-price');
+        if (priceEl) priceEl.textContent = `$${formatPrice(coin.last_price)}`;
 
-      card.addEventListener('click', () => openModal(coin));
-      fragment.appendChild(card);
+        const spikeEl = card.querySelector('.spike-badge');
+        if (spikeEl) {
+          spikeEl.textContent = `${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x`;
+          spikeEl.className = `spike-badge ${isHotSpike ? 'spike-hot' : 'spike-normal'}`;
+        }
+        const sparkBox = card.querySelector('.card-sparkline-box');
+        if (sparkBox) sparkBox.innerHTML = sparkSvg;
+
+        const footer = card.querySelector('.card-footer');
+        if (footer) {
+          footer.innerHTML = `
+            <span>5M量: $${formatNumber(coin.vol_5m)}</span>
+            <span>1M: ${coin.price_chg_1m >= 0 ? '+' : ''}${coin.price_chg_1m.toFixed(2)}%</span>
+          `;
+        }
+      } else {
+        card = document.createElement('div');
+        card.className = 'coin-card';
+        card.dataset.symbol = coin.symbol;
+        card.innerHTML = `
+          <button type="button" class="btn-star ${isFav ? 'active' : ''}" style="position:absolute;top:12px;right:12px;z-index:2;" title="${isFav ? '取消自選' : '加入自選'}" onclick="window.cyberpumpToggleStar('${coin.symbol}', event)">
+            ★
+          </button>
+          <div class="card-top-row" style="padding-right:26px;">
+            <span class="card-symbol">${coin.base_asset}<small style="font-size:0.7em;color:var(--text-muted)">/USDT</small></span>
+            <span class="card-gain ${chgClass}">${coin.price_chg_5m >= 0 ? '+' : ''}${coin.price_chg_5m.toFixed(2)}%</span>
+          </div>
+          <div class="card-mid-row">
+            <span class="card-price">$${formatPrice(coin.last_price)}</span>
+            <span class="spike-badge ${isHotSpike ? 'spike-hot' : 'spike-normal'}">
+              ${isHotSpike ? '🔥 ' : ''}${coin.vol_spike.toFixed(1)}x
+            </span>
+          </div>
+          <div class="card-sparkline-box">
+            ${sparkSvg}
+          </div>
+          <div class="card-footer">
+            <span>5M量: $${formatNumber(coin.vol_5m)}</span>
+            <span>1M: ${coin.price_chg_1m >= 0 ? '+' : ''}${coin.price_chg_1m.toFixed(2)}%</span>
+          </div>
+        `;
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('button')) return;
+          openModal(state.marketData[coin.symbol] || coin);
+        });
+      }
+
+      if (el.cardsContainer.children[idx] !== card) {
+        el.cardsContainer.insertBefore(card, el.cardsContainer.children[idx] || null);
+      }
     });
-
-    el.cardsContainer.innerHTML = '';
-    el.cardsContainer.appendChild(fragment);
   }
 
   function generateSparklineSvg(points, isPositive, width = 90, height = 28) {
@@ -1189,27 +1508,36 @@
     const box = document.getElementById('tradingview-embed-box');
     if (!box) return;
     box.innerHTML = '';
+    const currentInterval = state.tvInterval || "5";
 
-    if (window.TradingView) {
-      new window.TradingView.widget({
-        autosize: true,
-        symbol: `BINANCE:${symbol}`,
-        interval: "1",
-        timezone: "Asia/Taipei",
-        theme: "dark",
-        style: "1",
-        locale: "zh_TW",
-        toolbar_bg: "#0e121b",
-        enable_publishing: false,
-        hide_top_toolbar: false,
-        hide_legend: false,
-        save_image: false,
-        container_id: "tradingview-embed-box",
-        studies: ["Volume@tv-basicstudies"]
-      });
-    } else {
-      box.innerHTML = '<div style="color:var(--text-muted);display:flex;align-items:center;justify-content:center;height:100%;">TradingView 即時圖表載入中...</div>';
+    function createWidget() {
+      if (window.TradingView) {
+        new window.TradingView.widget({
+          autosize: true,
+          symbol: `BINANCE:${symbol}`,
+          interval: currentInterval,
+          timezone: "Asia/Taipei",
+          theme: "dark",
+          style: "1",
+          locale: "zh_TW",
+          toolbar_bg: "#0e121b",
+          enable_publishing: false,
+          hide_top_toolbar: false,
+          hide_legend: false,
+          save_image: false,
+          container_id: "tradingview-embed-box",
+          studies: ["Volume@tv-basicstudies"]
+        });
+      } else {
+        box.innerHTML = '<div style="color:var(--text-muted);display:flex;align-items:center;justify-content:center;height:100%;">TradingView 即時圖表載入中...</div>';
+        setTimeout(() => {
+          if (state.activeModalSymbol === symbol && window.TradingView) {
+            createWidget();
+          }
+        }, 500);
+      }
     }
+    createWidget();
   }
 
   function updateModalDynamic(coin) {
@@ -1245,6 +1573,15 @@
     updateModalStarButton(coin.symbol);
     updateModalTargetPriceUI(coin.symbol);
     updateModalDynamic(coin);
+
+    // Sync active interval button state
+    document.querySelectorAll('.btn-interval').forEach(btn => {
+      if (btn.dataset.interval === (state.tvInterval || "5")) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
 
     el.modalBinanceLink.href = `https://www.binance.com/zh-TC/trade/${coin.symbol}?type=spot`;
     el.modalTvLink.href = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol}`;
@@ -1524,6 +1861,7 @@
       saveWatchlist();
       updateWatchlistUI();
       el.quickCoinInput.value = '';
+      ensureCoinTracked(val);
       renderMarket();
     }
 
@@ -1540,9 +1878,35 @@
         const sym = btn.dataset.sym;
         if (sym) {
           toggleWatchlist(sym);
+          ensureCoinTracked(sym);
         }
       });
     });
+
+    // Timeframe Interval Bar Selector for TradingView
+    document.querySelectorAll('.btn-interval').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.btn-interval').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.tvInterval = btn.dataset.interval;
+        if (state.activeModalSymbol) {
+          loadTradingViewWidget(state.activeModalSymbol);
+        }
+      });
+    });
+
+    // Table Row Event Delegation (Eliminates click loss and recreation overhead)
+    if (el.cryptoTbody) {
+      el.cryptoTbody.addEventListener('click', (e) => {
+        if (e.target.closest('button') || e.target.closest('a')) return;
+        const tr = e.target.closest('tr');
+        if (!tr || !tr.dataset || !tr.dataset.symbol) return;
+        const sym = tr.dataset.symbol;
+        if (state.marketData[sym]) {
+          openModal(state.marketData[sym]);
+        }
+      });
+    }
 
     // Scope Quick Switchers in Control Bar
     if (el.btnScopeAll) {
@@ -1599,6 +1963,27 @@
     }
 
     // Emergency Alarm Banner Actions
+    if (el.alarmBtnUnmute) {
+      el.alarmBtnUnmute.addEventListener('click', () => {
+        initAudio();
+        if (state.audioCtx && state.audioCtx.state === 'running') {
+          el.alarmBtnUnmute.style.display = 'none';
+          playAlertSound(state.alertRules.soundType);
+        }
+      });
+    }
+
+    // Modern browser autoplay audio context unlock on any interaction
+    const unlockAudio = () => {
+      initAudio();
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+    };
+    document.addEventListener('click', unlockAudio, { once: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
+    document.addEventListener('touchstart', unlockAudio, { once: true });
+
     if (el.alarmBtnInspect) {
       el.alarmBtnInspect.addEventListener('click', () => {
         if (state.activeAlarmCoin && state.marketData[state.activeAlarmCoin]) {
@@ -1822,6 +2207,11 @@
   function init() {
     setupEventListeners();
     updateWatchlistUI();
+    if (state.watchlist && state.watchlist.size > 0) {
+      state.watchlist.forEach(sym => {
+        ensureCoinTracked(sym);
+      });
+    }
     initDataFeed();
   }
 

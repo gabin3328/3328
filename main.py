@@ -185,12 +185,20 @@ async def websocket_endpoint(websocket: WebSocket):
         forwarder_task.cancel()
         engine.unsubscribe_alerts(alert_queue)
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
+# Root and static assets
 @app.get("/")
 async def root():
-    return FileResponse("static/index.html")
+    return FileResponse("index.html")
+
+@app.get("/app.js")
+async def get_app_js():
+    return FileResponse("app.js", media_type="application/javascript")
+
+@app.get("/style.css")
+async def get_style_css():
+    return FileResponse("style.css", media_type="text/css")
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
